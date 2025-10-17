@@ -1,0 +1,53 @@
+# S3 Bucket Configuration - YAML Template
+# This file demonstrates how to configure S3 buckets using YAML format
+# Usage: set var.yaml_config_file = "path/to/this/file.yaml" in terraform.tfvars
+
+s3_buckets:
+  my-secure-bucket:
+    bucket_name: "my-secure-bucket-${random_suffix}"
+    account_key: "dev-account"
+    region_code: "use1"
+    force_destroy: false
+    
+    # Versioning configuration
+    versioning_enabled: true
+    
+    # Encryption settings
+    encryption:
+      sse_algorithm: "aws:kms"
+      kms_master_key_id: "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+      bucket_key_enabled: true
+    
+    # Bucket policy (can use file reference or inline)
+    bucket_policy_file: "policies/my-secure-bucket-policy.json"
+    # OR inline policy:
+    # bucket_policy: |
+    #   {
+    #     "Version": "2012-10-17",
+    #     "Statement": [...]
+    #   }
+    
+    # Tags
+    tags:
+      Environment: "development"
+      Project: "my-project"
+      CostCenter: "engineering"
+
+  another-bucket:
+    bucket_name: "another-bucket-${random_suffix}"
+    account_key: "prod-account"
+    region_code: "usw2"
+    force_destroy: false
+    versioning_enabled: true
+    
+    encryption:
+      sse_algorithm: "AES256"
+      kms_master_key_id: ""
+      bucket_key_enabled: false
+    
+    tags:
+      Environment: "production"
+      Project: "my-project"
+
+# Note: YAML configuration will be merged with any s3_buckets variable
+# The s3_buckets variable takes precedence over YAML configuration

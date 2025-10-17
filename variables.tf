@@ -1,0 +1,118 @@
+# S3 Management Deployment Variables
+
+variable "accounts" {
+  description = "Account configurations for multi-account deployment"
+  type = map(object({
+    id           = string
+    account_id   = string
+    account_name = string
+    environment  = string
+    regions      = list(string)
+  }))
+  default = {}
+}
+
+variable "aws_regions" {
+  description = "AWS regions mapping"
+  type = map(object({
+    name = string
+    code = string
+  }))
+  default = {
+    "use1" = {
+      name = "us-east-1"
+      code = "use1"
+    }
+    "usw2" = {
+      name = "us-west-2"
+      code = "usw2"
+    }
+    "ew1" = {
+      name = "eu-west-1"
+      code = "ew1"
+    }
+  }
+}
+
+variable "s3_buckets" {
+  description = "S3 bucket configurations"
+  type = map(object({
+    bucket_name   = string
+    account_key   = string
+    region_code   = string
+    force_destroy = optional(bool, false)
+
+    # Versioning
+    versioning_enabled = optional(bool, null)
+
+    # Encryption
+    encryption = optional(object({
+      sse_algorithm      = string
+      kms_master_key_id  = string
+      bucket_key_enabled = optional(bool, true)
+    }), null)
+
+    # Bucket Policy
+    bucket_policy      = optional(string, null)
+    bucket_policy_file = optional(string, null)
+
+    tags = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for _, v in var.s3_buckets : v.bucket_policy == null || v.bucket_policy_file == null
+    ])
+    error_message = "Each S3 bucket can have either bucket_policy OR bucket_policy_file specified, but not both."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, v in var.s3_buckets : v.encryption == null ? true : length(trimspace(v.encryption.kms_master_key_id)) > 0
+    ])
+    error_message = "Each encrypted S3 bucket must include a non-empty kms_master_key_id."
+  }
+}
+
+variable "assume_role_name" {
+  description = "IAM role name to assume for cross-account access"
+  type        = string
+  default     = "TerraformExecutionRole"
+}
+
+variable "common_tags" {
+  description = "Common tags to be applied to all resources"
+  type        = map(string)
+  default = {
+    ManagedBy   = "terraform"
+    Project     = "S3-Management"
+    Environment = "dev"
+    Owner       = "DevOps-Team"
+  }
+}
+
+variable "yaml_config_file" {
+  description = "Path to YAML configuration file for S3 buckets (alternative to s3_buckets variable)"
+  type        = string
+  default     = ""
+}
+
+variable "kms_key_id" {
+  description = "KMS key ID for S3 bucket encryption (existing custom key)"
+  type        = string
+  default     = ""
+}
+
+variable "iam_role_name" {
+  description = "IAM role name for S3 and KMS access"
+  type        = string
+  default     = ""
+}
+
+variable "update_kms_policy" {
+  description = "Whether to update the KMS key policy to allow S3 and IAM role access"
+  type        = bool
+  default     = false
+}
+

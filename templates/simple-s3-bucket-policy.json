@@ -1,0 +1,56 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject", 
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::{{BUCKET_NAME}}/*",
+        "arn:aws:s3:::{{BUCKET_NAME}}"
+      ],
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "{{AUTHORIZED_ROLE_ARN}}"
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::{{BUCKET_NAME}}/*",
+        "arn:aws:s3:::{{BUCKET_NAME}}"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "aws:SourceVpce": [
+            "{{VPC_ENDPOINT_ID_1}}",
+            "{{VPC_ENDPOINT_ID_2}}"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyEncryptionHeaderWithoutAWSKMS",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::{{BUCKET_NAME}}/*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption-aws-kms-key-id": "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/{{KMS_KEY_ID}}"
+        }
+      }
+    }
+  ]
+}
