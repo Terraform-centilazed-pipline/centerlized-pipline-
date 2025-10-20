@@ -12,7 +12,8 @@ indexer:
 # OPA policies (optional)
 opa:
   enabled: true
-
+  paths:
+    - "../policies"  # path to OPA policy repo if separate
 
 # GitHub / Terrateam behavior
 git:
