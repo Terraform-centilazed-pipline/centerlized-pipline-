@@ -1,9 +1,5 @@
 # Centralized pipeline configuration for Terrateam
 
-# Enable module indexer to scan for modules
-indexer:
-  enabled: true
-  
 # General settings
 default_environment: dev   # default environment if not specified
 workspace: centralized
@@ -11,14 +7,12 @@ workspace: centralized
 # Module indexing (scan subfolders for modules)
 indexer:
   enabled: true
-  paths:
-    - "modules/**"   # scan all module subfolders
+
 
 # OPA policies (optional)
 opa:
   enabled: true
-  paths:
-    - "../policies"  # path to OPA policy repo if separate
+
 
 # GitHub / Terrateam behavior
 git:
