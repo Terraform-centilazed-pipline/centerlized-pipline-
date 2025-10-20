@@ -1,0 +1,26 @@
+# Centralized pipeline configuration for Terrateam
+
+# General settings
+default_environment: dev   # default environment if not specified
+workspace: centralized
+
+# Module indexing (scan subfolders for modules)
+indexer:
+  enabled: true
+  paths:
+    - "modules/**"   # scan all module subfolders
+
+# OPA policies (optional)
+opa:
+  enabled: true
+  paths:
+    - "../policies"  # path to OPA policy repo if separate
+
+# GitHub / Terrateam behavior
+git:
+  auto_merge: true
+  comment_on_failure: true
+
+# No OIDC required because provider handles assume_role
+auth:
+  method: environment  # use environment credentials (CI/CD OIDC)
