@@ -1,0 +1,323 @@
+# =============================================================================
+# CENTRALIZED TERRAFORM CONTROLLER - The Real Deal!
+# =============================================================================
+# This workflow runs in the CENTRALIZED repo
+# It listens for events from dev repos and does ALL the work
+# Uses centralized main.tf, scripts, policies - dev repos just trigger it
+# =============================================================================
+
+name: Centralized Controller
+
+on:
+  repository_dispatch:
+    types: [terraform_pr]
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+env:
+  TERRAFORM_VERSION: '1.11.0'
+  OPA_VERSION: '0.59.0'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  terraform-controller:
+    name: 🎯 Terraform Controller
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📋 Event Details
+        run: |
+          echo "🔔 Repository Dispatch Event Received"
+          echo "Source Repo: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}"
+          echo "PR Number: ${{ github.event.client_payload.pr_number }}"
+          echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
+          echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
+          echo "Action: ${{ github.event.client_payload.action }}"
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.GT_APP_ID }}
+          private_key: ${{ secrets.GT_APP_PRIVATE_KEY }}
+
+      - name: Checkout Centralized Controller Repo
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/centerlized-pipline-
+          path: controller
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout Source Dev Repo (PR branch)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}
+          ref: ${{ github.event.client_payload.pr_head_ref }}
+          path: source-repo
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout OPA Policies
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/OPA-Poclies
+          path: opa-policies
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout Terraform Modules
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/tf-module
+          path: tf-modules
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install pyyaml boto3 jinja2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x opa
+          sudo mv opa /usr/local/bin/
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: terraform-controller
+
+      # ===== Get changed files from PR =====
+      - name: 🔍 Get Changed Files
+        id: changed-files
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: '${{ github.event.client_payload.source_owner }}',
+              repo: '${{ github.event.client_payload.source_repo }}',
+              pull_number: ${{ github.event.client_payload.pr_number }}
+            });
+            
+            const tfvarsFiles = files
+              .filter(f => f.filename.match(/\.(tfvars|yaml|yml|json)$/))
+              .filter(f => f.filename.startsWith('Accounts/') || f.filename.startsWith('configs/'))
+              .map(f => f.filename);
+            
+            console.log('Changed files:', tfvarsFiles);
+            core.setOutput('files', tfvarsFiles.join(' '));
+            core.setOutput('count', tfvarsFiles.length);
+
+      # ===== STEP 1: DISCOVER DEPLOYMENTS =====
+      - name: 🔍 Discover Deployments
+        if: steps.changed-files.outputs.count > 0
+        id: discover
+        working-directory: source-repo
+        run: |
+          python3 ../controller/scripts/s3-deployment-manager.py discover \
+            --changed-files "${{ steps.changed-files.outputs.files }}" \
+            --output-summary deployments.json \
+            --debug
+          
+          total=$(jq -r '.total_deployments // 0' deployments.json)
+          echo "total=$total" >> $GITHUB_OUTPUT
+          
+          if [ "$total" -gt 0 ]; then
+            echo "✅ Found $total deployments"
+            echo "has_deployments=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No deployments found"
+            echo "has_deployments=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ===== STEP 2: TERRAFORM PLAN (using centralized main.tf) =====
+      - name: 📋 Terraform Plan
+        if: steps.discover.outputs.has_deployments == 'true'
+        id: plan
+        working-directory: controller
+        run: |
+          # Copy tfvars from source repo
+          cp -r ../source-repo/Accounts ./
+          cp -r ../source-repo/configs ./
+          
+          # Run terraform init and plan using centralized main.tf
+          terraform init
+          
+          terraform plan \
+            -var-file="../source-repo/$(echo '${{ steps.changed-files.outputs.files }}' | awk '{print $1}')" \
+            -out=tfplan \
+            -detailed-exitcode || exit_code=$?
+          
+          if [ "${exit_code}" == "0" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          elif [ "${exit_code}" == "2" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+          
+          terraform show -json tfplan > ../source-repo/terraform-plan.json
+          terraform show -no-color tfplan > ../source-repo/terraform-plan.txt
+
+      # ===== STEP 3: OPA VALIDATION =====
+      - name: 🛡️ OPA Validation
+        if: steps.plan.outputs.has_changes == 'true'
+        id: opa
+        run: |
+          cd source-repo
+          
+          opa eval -d ../opa-policies/terraform/s3/ \
+            -i terraform-plan.json \
+            "data.terraform.s3.violations" \
+            --format pretty > opa-result.txt || true
+          
+          violations=$(opa eval -d ../opa-policies/terraform/s3/ \
+            -i terraform-plan.json \
+            "data.terraform.s3.violations" \
+            --format json | jq -r '.result[0].expressions[0].value // {} | keys | length')
+          
+          echo "total_violations=$violations" >> $GITHUB_OUTPUT
+          
+          if [ "$violations" -eq 0 ]; then
+            echo "validation_status=passed" >> $GITHUB_OUTPUT
+            echo "✅ All policies passed"
+          else
+            echo "validation_status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Validation failed: $violations violations"
+          fi
+
+      # ===== STEP 4: POST PR COMMENT =====
+      - name: 💬 Post PR Comment
+        if: always() && steps.changed-files.outputs.count > 0
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            
+            let comment = `## 🚀 Centralized Terraform Controller Results\n\n`;
+            comment += `**Source Repo**: \`${{ github.event.client_payload.source_repo }}\`\n`;
+            comment += `**PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
+            comment += `**Branch**: \`${{ github.event.client_payload.pr_head_ref }}\`\n\n`;
+            
+            // Changed files
+            const files = '${{ steps.changed-files.outputs.files }}'.split(' ');
+            comment += `### 📁 Changed Files (${files.length})\n`;
+            files.forEach(f => comment += `- \`${f}\`\n`);
+            comment += `\n`;
+            
+            // Plan results
+            if ('${{ steps.plan.outputs.has_changes }}' === 'true') {
+              comment += `### 📋 Terraform Plan\n`;
+              comment += `\`\`\`terraform\n`;
+              try {
+                const plan = fs.readFileSync('source-repo/terraform-plan.txt', 'utf8');
+                // Truncate if too long
+                comment += plan.length > 60000 ? plan.substring(0, 60000) + '\n... (truncated)' : plan;
+              } catch (e) {
+                comment += 'Plan output not available\n';
+              }
+              comment += `\`\`\`\n\n`;
+            } else {
+              comment += `### 📋 Terraform Plan\n`;
+              comment += `ℹ️ No changes detected\n\n`;
+            }
+            
+            // OPA results
+            const validation = '${{ steps.opa.outputs.validation_status }}';
+            const violations = '${{ steps.opa.outputs.total_violations }}';
+            
+            comment += `### 🛡️ OPA Policy Validation\n`;
+            if (validation === 'passed') {
+              comment += `✅ **Status**: PASSED - No policy violations\n\n`;
+            } else if (validation === 'failed') {
+              comment += `❌ **Status**: FAILED\n`;
+              comment += `- **Violations**: ${violations}\n\n`;
+              try {
+                const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
+                comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
+              } catch (e) {}
+            }
+            
+            comment += `\n---\n`;
+            comment += `🤖 *Centralized Controller* | `;
+            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            
+            await github.rest.issues.createComment({
+              owner: '${{ github.event.client_payload.source_owner }}',
+              repo: '${{ github.event.client_payload.source_repo }}',
+              issue_number: ${{ github.event.client_payload.pr_number }},
+              body: comment
+            });
+
+      # ===== STEP 5: AUTO-MERGE OR CLOSE PR =====
+      - name: 🔀 Handle PR
+        if: steps.opa.outputs.validation_status != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const validation = '${{ steps.opa.outputs.validation_status }}';
+            const owner = '${{ github.event.client_payload.source_owner }}';
+            const repo = '${{ github.event.client_payload.source_repo }}';
+            const pr_number = ${{ github.event.client_payload.pr_number }};
+            
+            if (validation === 'passed') {
+              console.log('✅ OPA passed - merging PR');
+              
+              try {
+                await github.rest.pulls.merge({
+                  owner,
+                  repo,
+                  pull_number: pr_number,
+                  merge_method: 'squash',
+                  commit_title: '[Terraform] Auto-merge: OPA validation passed'
+                });
+                console.log('✅ PR merged');
+              } catch (error) {
+                console.log('⚠️ Could not merge:', error.message);
+              }
+            } else if (validation === 'failed') {
+              console.log('❌ OPA failed - closing PR');
+              
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pr_number,
+                state: 'closed'
+              });
+              
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr_number,
+                body: `❌ **PR Closed: Policy Violations**\n\nThis PR was automatically closed due to ${${{ steps.opa.outputs.total_violations }}} OPA policy violations.\n\nPlease fix the violations and create a new PR.`
+              });
+              
+              console.log('❌ PR closed');
+            }
+
+      # ===== UPLOAD ARTIFACTS =====
+      - name: 📦 Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-controller-results
+          path: |
+            source-repo/deployments.json
+            source-repo/terraform-plan.json
+            source-repo/terraform-plan.txt
+            source-repo/opa-result.txt
+            controller/tfplan
