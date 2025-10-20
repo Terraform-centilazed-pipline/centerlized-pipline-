@@ -29,7 +29,7 @@ permissions:
   actions: read
 
 env:
-  TERRAFORM_VERSION: '1.5.0'
+  TERRAFORM_VERSION: '1.11.0'
   OPA_VERSION: '0.59.0'
   AWS_REGION: 'us-east-1'
 
@@ -42,8 +42,8 @@ jobs:
         id: app-token
         uses: tibdex/github-app-token@v2
         with:
-          app_id: ${{ secrets.GTHUB_APP_ID }}
-          private_key: ${{ secrets.GTHUB_APP_PRIVATE_KEY }}
+          app_id: ${{ secrets.GT_APP_ID }}
+          private_key: ${{ secrets.GT_APP_PRIVATE_KEY }}
 
       - name: Checkout Source Repo
         uses: actions/checkout@v4
