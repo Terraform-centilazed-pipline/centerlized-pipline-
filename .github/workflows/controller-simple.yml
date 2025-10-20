@@ -23,12 +23,6 @@ on:
         description: 'push or pull_request'
         required: true
         type: string
-    secrets:
-      APP_PRIVATE_KEY:
-        required: true
-      AWS_ROLE_ARN:
-        required: true
-
 permissions:
   id-token: write
   contents: read
@@ -49,7 +43,7 @@ jobs:
         uses: tibdex/github-app-token@v2
         with:
           app_id: ${{ secrets.GITHUB_APP_ID }}
-          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          private_key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
 
       - name: Checkout Source Repo
         uses: actions/checkout@v4
@@ -101,7 +95,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: terraform-controller
 
