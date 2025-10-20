@@ -1,26 +1,34 @@
-# Centralized pipeline configuration for Terrateam
+# .terrateam/config.yml (centralized pipeline repo)
 
-# General settings
-default_environment: dev   # default environment if not specified
-workspace: centralized
-
-# Module indexing (scan subfolders for modules)
+# enable the repo indexer so Terrateam discovers modules and dependencies
 indexer:
   enabled: true
 
+# dirs maps directories to workspaces and when they should be triggered
+dirs:
+  # top-level repo directory: you can map specific subdirs if you want
+  .:
+    when_modified:
+      # adjust these patterns to match your repo layout
+      file_patterns:
+        - "${DIR}/**/*.tf"
+        - "${DIR}/**/*.tfvars"
+        - "modules/**"
 
-# OPA policies (optional)
-opa:
-  enabled: true
-  paths:
-    - "../policies"  # path to OPA policy repo if separate
+# run OPA policy validation before plan (pre-plan hook)
+hooks:
+  plan:
+    pre:
+      - type: run
+        # run your OPA validation script; adjust path as required
+        cmd: ["bash", "./scripts/opa-validate.sh"]
 
-# GitHub / Terrateam behavior
-git:
-  auto_merge: true
-  comment_on_failure: true
-
-# No OIDC required because provider handles assume_role
-auth:
-  method: environment  # use environment credentials (CI/CD OIDC)
-
+# optional: use a simple workflow that explicitly runs init/plan/apply
+workflows:
+  - tag_query: ""   # apply to all workspaces
+    plan:
+      - type: init
+      - type: plan
+    apply:
+      - type: init
+      - type: apply
