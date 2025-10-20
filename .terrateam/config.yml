@@ -7,8 +7,7 @@ workspace: centralized
 # Module indexing (scan subfolders for modules)
 indexer:
   enabled: true
-  paths:
-    - "modules/**"   # scan all module subfolders
+
 
 # OPA policies (optional)
 opa:
