@@ -24,3 +24,4 @@ git:
 # No OIDC required because provider handles assume_role
 auth:
   method: environment  # use environment credentials (CI/CD OIDC)
+
