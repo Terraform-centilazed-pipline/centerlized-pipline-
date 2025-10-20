@@ -12,8 +12,8 @@ You need to configure secrets in **TWO repositories**:
 
 | Secret Name | Required In | Purpose | How to Get |
 |-------------|-------------|---------|------------|
-| `GITHUB_APP_ID` | Controller only | GitHub App authentication | From GitHub App settings |
-| `GITHUB_APP_PRIVATE_KEY` | Both repos | GitHub App authentication | Generated from GitHub App |
+| `GTHUB_APP_ID` | Controller only | GitHub App authentication | From GitHub App settings |
+| `GTHUB_APP_PRIVATE_KEY` | Both repos | GitHub App authentication | Generated from GitHub App |
 | `AWS_TERRAFORM_ROLE_ARN` | Both repos | AWS authentication for Terraform | From AWS IAM |
 
 ---
@@ -65,7 +65,7 @@ You need to configure secrets in **TWO repositories**:
    ```
    App ID: 123456
    ```
-2. Copy this number - you'll need it for `GITHUB_APP_ID`
+2. Copy this number - you'll need it for `GTHUB_APP_ID`
 
 ### Step 4: Install the App
 
@@ -118,16 +118,16 @@ cat OPA-Poclies/AWS-IAM-SETUP-GUIDE.md
 
 2. Click **"New repository secret"** for each:
 
-   #### Secret 1: GITHUB_APP_ID
+   #### Secret 1: GTHUB_APP_ID
    ```
-   Name:  GITHUB_APP_ID
+   Name:  GTHUB_APP_ID
    Value: 123456
    ```
    *(Replace with your actual App ID from Step 3)*
 
-   #### Secret 2: GITHUB_APP_PRIVATE_KEY
+   #### Secret 2: GTHUB_APP_PRIVATE_KEY
    ```
-   Name:  GITHUB_APP_PRIVATE_KEY
+   Name:  GTHUB_APP_PRIVATE_KEY
    Value: -----BEGIN RSA PRIVATE KEY-----
           MIIEpAIBAAKCAQEA...
           (entire contents of the .pem file)
@@ -152,9 +152,9 @@ cat OPA-Poclies/AWS-IAM-SETUP-GUIDE.md
 
 2. Click **"New repository secret"** for each:
 
-   #### Secret 1: GITHUB_APP_PRIVATE_KEY
+   #### Secret 1: GTHUB_APP_PRIVATE_KEY
    ```
-   Name:  GITHUB_APP_PRIVATE_KEY
+   Name:  GTHUB_APP_PRIVATE_KEY
    Value: -----BEGIN RSA PRIVATE KEY-----
           MIIEpAIBAAKCAQEA...
           (entire contents of the .pem file)
@@ -182,8 +182,8 @@ https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/settings/se
 ```
 
 Expected:
-- ✅ `GITHUB_APP_ID`
-- ✅ `GITHUB_APP_PRIVATE_KEY`
+- ✅ `GTHUB_APP_ID`
+- ✅ `GTHUB_APP_PRIVATE_KEY`
 - ✅ `AWS_TERRAFORM_ROLE_ARN`
 
 ### Check Developer Repo (dev-deployment)
@@ -194,7 +194,7 @@ https://github.com/Terraform-centilazed-pipline/dev-deployment/settings/secrets/
 ```
 
 Expected:
-- ✅ `GITHUB_APP_PRIVATE_KEY`
+- ✅ `GTHUB_APP_PRIVATE_KEY`
 - ✅ `AWS_TERRAFORM_ROLE_ARN`
 
 ---
@@ -211,8 +211,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.GITHUB_APP_ID }}              # ← Used here
-          private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }} # ← Used here
+          app-id: ${{ secrets.GTHUB_APP_ID }}              # ← Used here
+          private-key: ${{ secrets.GTHUB_APP_PRIVATE_KEY }} # ← Used here
 
       - name: Checkout controller repo
         uses: actions/checkout@v4
@@ -239,7 +239,7 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
       event_type: ${{ github.event_name }}
     secrets:
-      APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}  # ← Passed to controller
+      APP_PRIVATE_KEY: ${{ secrets.GTHUB_APP_PRIVATE_KEY }}  # ← Passed to controller
       AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}     # ← Passed to controller
 ```
 
@@ -373,12 +373,12 @@ This allows GitHub Actions from your organization to assume the role.
   □ Install on 4 repositories
 
 □ Configure Controller Repo (centerlized-pipline-)
-  □ Add GITHUB_APP_ID
-  □ Add GITHUB_APP_PRIVATE_KEY
+  □ Add GTHUB_APP_ID
+  □ Add GTHUB_APP_PRIVATE_KEY
   □ Add AWS_TERRAFORM_ROLE_ARN
 
 □ Configure Developer Repo (dev-deployment)
-  □ Add GITHUB_APP_PRIVATE_KEY
+  □ Add GTHUB_APP_PRIVATE_KEY
   □ Add AWS_TERRAFORM_ROLE_ARN
 
 □ Verify AWS IAM Role
@@ -399,7 +399,7 @@ This allows GitHub Actions from your organization to assume the role.
 
 ### Secrets Required by Repository
 
-| Repository | GITHUB_APP_ID | GITHUB_APP_PRIVATE_KEY | AWS_TERRAFORM_ROLE_ARN |
+| Repository | GTHUB_APP_ID | GTHUB_APP_PRIVATE_KEY | AWS_TERRAFORM_ROLE_ARN |
 |------------|---------------|------------------------|------------------------|
 | **centerlized-pipline-** | ✅ Required | ✅ Required | ✅ Required |
 | **dev-deployment** | ❌ Not needed | ✅ Required | ✅ Required |

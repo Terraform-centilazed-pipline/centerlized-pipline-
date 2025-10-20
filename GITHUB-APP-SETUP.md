@@ -144,11 +144,11 @@ Go to: **Settings** → **Secrets and variables** → **Actions** → **New repo
 
 ```bash
 # Secret 1
-Name: GITHUB_APP_ID
+Name: GTHUB_APP_ID
 Value: 123456  # Your App ID from GitHub App page
 
 # Secret 2  
-Name: GITHUB_APP_PRIVATE_KEY
+Name: GTHUB_APP_PRIVATE_KEY
 Value: 
 -----BEGIN RSA PRIVATE KEY-----
 <paste entire contents of .pem file here>
@@ -165,7 +165,7 @@ Go to: **Settings** → **Secrets and variables** → **Actions** → **New repo
 
 ```bash
 # Secret 1 (same as controller)
-Name: GITHUB_APP_PRIVATE_KEY
+Name: GTHUB_APP_PRIVATE_KEY
 Value: 
 -----BEGIN RSA PRIVATE KEY-----
 <paste entire contents of .pem file here>
@@ -176,7 +176,7 @@ Name: AWS_TERRAFORM_ROLE_ARN
 Value: arn:aws:iam::ACCOUNT_ID:role/TerraformExecutionRole
 
 # Secret 3 (if needed for modules)
-Name: GITHUB_APP_ID
+Name: GTHUB_APP_ID
 Value: 123456
 ```
 
@@ -207,8 +207,8 @@ In any workflow, add this step to test:
 - name: Test GitHub App Token
   uses: tibdex/github-app-token@v2
   with:
-    app_id: ${{ secrets.GITHUB_APP_ID }}
-    private_key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+    app_id: ${{ secrets.GTHUB_APP_ID }}
+    private_key: ${{ secrets.GTHUB_APP_PRIVATE_KEY }}
 ```
 
 ---
@@ -228,11 +228,11 @@ In any workflow, add this step to test:
 ✅ Webhook DISABLED (Inactive)
 ✅ App installed on all required repos
 ✅ Secrets configured in controller repo:
-   - GITHUB_APP_ID
-   - GITHUB_APP_PRIVATE_KEY
+   - GTHUB_APP_ID
+   - GTHUB_APP_PRIVATE_KEY
    - AWS_TERRAFORM_ROLE_ARN
 ✅ Secrets configured in dev repos:
-   - GITHUB_APP_PRIVATE_KEY
+   - GTHUB_APP_PRIVATE_KEY
    - AWS_TERRAFORM_ROLE_ARN
 ```
 
@@ -272,8 +272,8 @@ In any workflow, add this step to test:
 ## Troubleshooting
 
 ### "Bad credentials" error
-- Check GITHUB_APP_ID matches the app
-- Verify GITHUB_APP_PRIVATE_KEY has complete .pem content
+- Check GTHUB_APP_ID matches the app
+- Verify GTHUB_APP_PRIVATE_KEY has complete .pem content
 - Ensure app is installed on the repository
 
 ### "Resource not accessible by integration"
@@ -333,7 +333,7 @@ GitHub App settings → Permissions & events tab
 ## What Happens After Setup
 
 1. **Dev creates PR** with terraform changes
-2. **Dev repo workflow** triggers (uses `GITHUB_APP_PRIVATE_KEY`)
+2. **Dev repo workflow** triggers (uses `GTHUB_APP_PRIVATE_KEY`)
 3. **Workflow generates token** from GitHub App
 4. **Token used to call** controller workflow
 5. **Controller runs** with full permissions

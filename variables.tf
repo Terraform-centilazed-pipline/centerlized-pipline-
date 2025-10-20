@@ -116,3 +116,85 @@ variable "update_kms_policy" {
   default     = false
 }
 
+# =============================================================================
+# KMS Module Variables
+# =============================================================================
+
+variable "kms_keys" {
+  description = "Map of KMS keys to create"
+  type = map(object({
+    description              = optional(string)
+    key_usage                = optional(string, "ENCRYPT_DECRYPT")
+    key_spec                 = optional(string, "SYMMETRIC_DEFAULT")
+    multi_region             = optional(bool, false)
+    deletion_window_in_days  = optional(number, 30)
+    enable_key_rotation      = optional(bool, true)
+    policy                   = optional(string)
+    policy_file              = optional(string)
+    policy_content           = optional(string)
+    aliases                  = optional(list(string), [])
+    grants                   = optional(list(object({
+      name               = string
+      grantee_principal  = string
+      operations         = list(string)
+      retiring_principal = optional(string)
+      constraints = optional(object({
+        encryption_context_equals = optional(map(string))
+        encryption_context_subset = optional(map(string))
+      }))
+    })), [])
+    tags = optional(map(string), {})
+  }))
+  default = {}
+}
+
+# =============================================================================
+# IAM Module Variables
+# =============================================================================
+
+variable "iam_users" {
+  description = "Map of IAM users to create"
+  type = map(object({
+    name                    = string
+    path                    = optional(string, "/")
+    permissions_boundary    = optional(string)
+    force_destroy           = optional(bool, false)
+    create_access_key       = optional(bool, false)
+    create_login_profile    = optional(bool, false)
+    password_reset_required = optional(bool, true)
+    password_length         = optional(number, 20)
+    pgp_key                 = optional(string)
+    policies                = optional(map(string), {})
+    tags                    = optional(map(string), {})
+  }))
+  default = {}
+}
+
+variable "iam_roles" {
+  description = "Map of IAM roles to create"
+  type = map(object({
+    name                 = string
+    path                 = optional(string, "/")
+    description          = optional(string)
+    assume_role_policy   = string
+    permissions_boundary = optional(string)
+    max_session_duration = optional(number, 3600)
+    policies             = optional(map(string), {})
+    inline_policies      = optional(map(string), {})
+    tags                 = optional(map(string), {})
+  }))
+  default = {}
+}
+
+variable "iam_policies" {
+  description = "Map of IAM policies to create"
+  type = map(object({
+    name        = string
+    path        = optional(string, "/")
+    description = optional(string)
+    policy      = string
+    tags        = optional(map(string), {})
+  }))
+  default = {}
+}
+

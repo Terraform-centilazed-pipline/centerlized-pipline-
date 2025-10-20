@@ -13,8 +13,8 @@ Generate private key → Save .pem file
 centerlized-pipline-, dev-deployment, OPA-Poclies, tf-module
 
 # 3. Add secrets to repos
-GITHUB_APP_ID=123456
-GITHUB_APP_PRIVATE_KEY=<paste .pem>
+GTHUB_APP_ID=123456
+GTHUB_APP_PRIVATE_KEY=<paste .pem>
 AWS_TERRAFORM_ROLE_ARN=arn:aws:iam::xxx:role/TerraformExecutionRole
 
 # 4. Done! Create a PR and watch it work
@@ -241,7 +241,7 @@ ls .github/workflows/controller-simple.yml  # Should exist
 ```bash
 # Check secrets are set correctly
 # Go to repo Settings → Secrets → Actions
-# Verify GITHUB_APP_PRIVATE_KEY has full .pem content
+# Verify GTHUB_APP_PRIVATE_KEY has full .pem content
 ```
 
 ### Workflow doesn't trigger

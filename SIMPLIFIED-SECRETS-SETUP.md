@@ -12,8 +12,8 @@ After optimization, we've eliminated ALL secret requirements from developer repo
 
 | Secret Name | Purpose | Where to Get |
 |------------|---------|--------------|
-| `GITHUB_APP_ID` | Identifies the GitHub App | GitHub App settings page |
-| `GITHUB_APP_PRIVATE_KEY` | Authenticates as the GitHub App | Generate from GitHub App |
+| `GTHUB_APP_ID` | Identifies the GitHub App | GitHub App settings page |
+| `GTHUB_APP_PRIVATE_KEY` | Authenticates as the GitHub App | Generate from GitHub App |
 | `AWS_TERRAFORM_ROLE_ARN` | AWS role for Terraform execution | Your AWS IAM console |
 
 ### **Developer Repos** (`dev-deployment`, etc.) - **0 Secrets** ✅
@@ -74,17 +74,17 @@ After optimization, we've eliminated ALL secret requirements from developer repo
 https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/settings/secrets/actions
 ```
 
-#### Secret 1: GITHUB_APP_ID
+#### Secret 1: GTHUB_APP_ID
 
 1. Click "New repository secret"
-2. **Name:** `GITHUB_APP_ID`
+2. **Name:** `GTHUB_APP_ID`
 3. **Value:** Your App ID number (e.g., `123456`)
 4. Click "Add secret"
 
-#### Secret 2: GITHUB_APP_PRIVATE_KEY
+#### Secret 2: GTHUB_APP_PRIVATE_KEY
 
 1. Click "New repository secret"
-2. **Name:** `GITHUB_APP_PRIVATE_KEY`
+2. **Name:** `GTHUB_APP_PRIVATE_KEY`
 3. **Value:** Open your `.pem` file and copy **ENTIRE contents** including:
    ```
    -----BEGIN RSA PRIVATE KEY-----
@@ -117,8 +117,8 @@ https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/settings/se
 ```
 
 You should see **3 secrets**:
-- ✅ GITHUB_APP_ID
-- ✅ GITHUB_APP_PRIVATE_KEY
+- ✅ GTHUB_APP_ID
+- ✅ GTHUB_APP_PRIVATE_KEY
 - ✅ AWS_TERRAFORM_ROLE_ARN
 
 #### Dev Repo Verification
@@ -148,8 +148,8 @@ You should see: **ZERO secrets!** ✅
 ┌───────────────────────────────────────────────────────────────┐
 │ 2. Controller Repo (centerlized-pipline-)                     │
 │    ├─ Uses its OWN secrets:                                   │
-│    │  ├─ GITHUB_APP_ID                                        │
-│    │  ├─ GITHUB_APP_PRIVATE_KEY                               │
+│    │  ├─ GTHUB_APP_ID                                        │
+│    │  ├─ GTHUB_APP_PRIVATE_KEY                               │
 │    │  └─ AWS_TERRAFORM_ROLE_ARN                               │
 │    ├─ Generates GitHub App token                              │
 │    ├─ Checks out all 4 repos                                  │
@@ -221,7 +221,7 @@ Check the workflow logs for:
 **Fix:**
 1. Re-download the `.pem` file from GitHub App settings
 2. Copy the ENTIRE contents including BEGIN/END lines
-3. Update `GITHUB_APP_PRIVATE_KEY` secret
+3. Update `GTHUB_APP_PRIVATE_KEY` secret
 4. Make sure no extra spaces or newlines
 
 ### ❌ Error: "Invalid App ID"
@@ -278,8 +278,8 @@ Check the workflow logs for:
   - [ ] Install on 4 repos
 
 - [ ] Add secrets to **controller repo only**:
-  - [ ] GITHUB_APP_ID
-  - [ ] GITHUB_APP_PRIVATE_KEY
+  - [ ] GTHUB_APP_ID
+  - [ ] GTHUB_APP_PRIVATE_KEY
   - [ ] AWS_TERRAFORM_ROLE_ARN
 
 - [ ] Verify **dev repos have ZERO secrets**
@@ -293,12 +293,12 @@ Check the workflow logs for:
 ### Before (Overcomplicated):
 ```yaml
 # Dev repos needed 2 secrets:
-- GITHUB_APP_PRIVATE_KEY
+- GTHUB_APP_PRIVATE_KEY
 - AWS_TERRAFORM_ROLE_ARN
 
 # Dev repo passed them to controller:
 secrets:
-  APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+  APP_PRIVATE_KEY: ${{ secrets.GTHUB_APP_PRIVATE_KEY }}
   AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
 ```
 
