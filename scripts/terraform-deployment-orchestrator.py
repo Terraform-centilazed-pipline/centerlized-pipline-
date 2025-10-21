@@ -196,18 +196,33 @@ class TerraformOrchestrator:
         
         try:
             # Fast path extraction from path structure
-            # Expected: Accounts/<account>/<region>/<project>/<file>
+            # Expected patterns:
+            # 1. Accounts/<account>/<region>/<project>/<file>  (4 parts after Accounts)
+            # 2. Accounts/<project>/<file>                      (2 parts after Accounts)
             parts = file_path.parts
             if 'Accounts' not in parts:
+                debug_print(f"Skipping {file_path}: No 'Accounts' in path")
                 return None
             
             accounts_idx = parts.index('Accounts')
-            if len(parts) < accounts_idx + 4:
-                return None
+            parts_after_accounts = len(parts) - accounts_idx - 1
             
-            account_name = parts[accounts_idx + 1]
-            region = parts[accounts_idx + 2]
-            project = parts[accounts_idx + 3]
+            debug_print(f"Analyzing: {file_path.name}, parts after Accounts: {parts_after_accounts}")
+            
+            # Pattern 1: Full path with account/region/project/file
+            if parts_after_accounts >= 4:
+                account_name = parts[accounts_idx + 1]
+                region = parts[accounts_idx + 2]
+                project = parts[accounts_idx + 3]
+            # Pattern 2: Simplified path with project/file (use project as all identifiers)
+            elif parts_after_accounts >= 2:
+                project = parts[accounts_idx + 1]
+                account_name = project  # Use project name as account
+                region = 'us-east-1'  # Default region
+                debug_print(f"Using simplified pattern: project={project}")
+            else:
+                debug_print(f"Skipping {file_path}: Not enough path components ({parts_after_accounts} parts)")
+                return None
             
             # Get account ID from config (fast dict lookup)
             account_id = (self.accounts_config.get('accounts', {})
