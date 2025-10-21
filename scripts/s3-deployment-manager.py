@@ -294,28 +294,14 @@ class S3DeploymentManager:
             shutil.copy2(tfvars_source, tfvars_dest)
             debug_print(f"Copied {tfvars_source} -> {tfvars_dest}")
             
-            # Extract actual account name from tfvars (from account_name variable)
-            actual_account_name = deployment['account_name']  # Default to folder-based name
-            try:
-                with open(tfvars_source, 'r') as f:
-                    tfvars_content = f.read()
-                    import re
-                    
-                    # Extract from: account_name = "arj-wkld-a-prd"
-                    account_name_match = re.search(r'account_name\s*=\s*["\']([^"\']+)["\']', tfvars_content)
-                    if account_name_match:
-                        actual_account_name = account_name_match.group(1)
-                        debug_print(f"Extracted account name from tfvars: {actual_account_name}")
-            except Exception as e:
-                debug_print(f"Could not extract account name from tfvars, using folder name: {e}")
-            
             # Copy policy JSON files referenced in tfvars (if any)
             # This handles the case where tfvars references external JSON files
             # that need to be available in the controller directory
             self._copy_referenced_policy_files(tfvars_source, main_dir, deployment)
             
-            # Initialize Terraform with backend config using actual account name
-            state_key = f"s3/{actual_account_name}/{deployment['region']}/{deployment['project']}/terraform.tfstate"
+            # Initialize Terraform with backend config
+            # Use deployment['account_name'] which is the folder name (matches existing state files)
+            state_key = f"s3/{deployment['account_name']}/{deployment['region']}/{deployment['project']}/terraform.tfstate"
             debug_print(f"State key: {state_key}")
             init_cmd = [
                 'init', '-input=false',
