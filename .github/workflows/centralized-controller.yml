@@ -131,7 +131,7 @@ jobs:
         id: discover
         working-directory: source-repo
         run: |
-          python3 ../controller/scripts/s3-deployment-manager.py discover \
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
             --changed-files "${{ steps.changed-files.outputs.files }}" \
             --output-summary deployments.json \
             --debug
@@ -158,10 +158,10 @@ jobs:
           echo "📋 Running terraform plan for multiple deployments..."
           echo "🔧 Terraform directory: $TERRAFORM_DIR"
           
-          # Use the deployment manager to run plans and create artifacts
+          # Use the deployment orchestrator to run plans and create artifacts
           # This handles multiple deployments from different accounts properly
           set +e  # Don't exit on error - we want to show results even if some plans fail
-          python3 ../controller/scripts/s3-deployment-manager.py plan \
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py plan \
             --deployments-json deployments.json \
             --output-summary plan-results.json \
             --debug
@@ -582,7 +582,7 @@ jobs:
         working-directory: source-repo
         run: |
           echo "🔍 Discovering deployments from merged PR..."
-          python3 ../controller/scripts/s3-deployment-manager.py discover \
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
             --changed-files "${{ steps.merged-files.outputs.files }}" \
             --output-summary deployments.json \
             --debug
@@ -608,9 +608,9 @@ jobs:
           echo "🚀 Running terraform apply for multiple deployments..."
           echo "🔧 Terraform directory: $TERRAFORM_DIR"
           
-          # Use the deployment manager to run applies
+          # Use the deployment orchestrator to run applies
           set +e  # Don't exit on error - we want to show results even if some applies fail
-          python3 ../controller/scripts/s3-deployment-manager.py apply \
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py apply \
             --deployments-json deployments.json \
             --output-summary apply-results.json \
             --debug
