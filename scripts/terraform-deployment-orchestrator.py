@@ -127,10 +127,21 @@ class TerraformOrchestrator:
             List of deployment info dictionaries
         """
         print("🔍 Discovering deployments...")
+        debug_print(f"Working directory (where Accounts/ should be): {self.working_dir}")
+        debug_print(f"Project root (where main.tf is): {self.project_root}")
         
         accounts_dir = self.working_dir / "Accounts"
+        debug_print(f"Looking for Accounts directory at: {accounts_dir}")
+        
         if not accounts_dir.exists():
             print(f"⚠️ No Accounts directory found at {accounts_dir}")
+            # Try to list what IS in working_dir to help debug
+            if self.working_dir.exists():
+                try:
+                    contents = list(self.working_dir.iterdir())
+                    debug_print(f"Contents of {self.working_dir}: {[p.name for p in contents[:10]]}")
+                except Exception as e:
+                    debug_print(f"Could not list directory: {e}")
             return []
         
         # Build file list to analyze
