@@ -214,6 +214,24 @@ class TerraformOrchestrator:
         
         return None
     
+    def _extract_account_name_from_tfvars(self, tfvars_file: Path) -> Optional[str]:
+        """
+        Extract the real account_name from tfvars file content.
+        Looks for: account_name = "arj-wkld-a-prd"
+        """
+        try:
+            content = tfvars_file.read_text()
+            # Look for account_name in accounts block
+            # Pattern: account_name = "arj-wkld-a-prd"
+            import re
+            match = re.search(r'account_name\s*=\s*"([^"]+)"', content)
+            if match:
+                return match.group(1)
+            return None
+        except Exception as e:
+            debug_print(f"Error extracting account name from {tfvars_file}: {e}")
+            return None
+    
     def _matches_filters(self, deployment_info: Dict, filters: Optional[Dict]) -> bool:
         """Check if deployment matches provided filters"""
         if not filters:
@@ -299,9 +317,20 @@ class TerraformOrchestrator:
             # that need to be available in the controller directory
             self._copy_referenced_policy_files(tfvars_source, main_dir, deployment)
             
+            # Extract real account name from tfvars file for state key
+            # The deployment['account_name'] might be the folder name (test-poc-3)
+            # but the actual account_name in tfvars might be different (arj-wkld-a-prd)
+            real_account_name = self._extract_account_name_from_tfvars(tfvars_source)
+            if not real_account_name:
+                # Fallback to folder-based account name
+                real_account_name = deployment['account_name']
+                debug_print(f"Using folder name as account: {real_account_name}")
+            else:
+                debug_print(f"Extracted account name from tfvars: {real_account_name}")
+            
             # Initialize Terraform with backend config
-            # Use deployment['account_name'] which is the folder name (matches existing state files)
-            state_key = f"s3/{deployment['account_name']}/{deployment['region']}/{deployment['project']}/terraform.tfstate"
+            # Use real account name from tfvars (matches existing state files)
+            state_key = f"s3/{real_account_name}/{deployment['region']}/{deployment['project']}/terraform.tfstate"
             debug_print(f"State key: {state_key}")
             init_cmd = [
                 'init', '-input=false',
