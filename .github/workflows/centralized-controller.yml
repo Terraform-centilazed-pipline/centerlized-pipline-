@@ -130,6 +130,8 @@ jobs:
         if: steps.changed-files.outputs.count > 0
         id: discover
         working-directory: source-repo
+        env:
+          TERRAFORM_DIR: ../controller
         run: |
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
             --changed-files "${{ steps.changed-files.outputs.files }}" \
@@ -580,6 +582,8 @@ jobs:
         if: steps.merged-files.outputs.count > 0
         id: discover
         working-directory: source-repo
+        env:
+          TERRAFORM_DIR: ../controller
         run: |
           echo "🔍 Discovering deployments from merged PR..."
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
