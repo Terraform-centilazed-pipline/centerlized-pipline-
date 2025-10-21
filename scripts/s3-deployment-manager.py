@@ -42,13 +42,17 @@ class S3DeploymentManager:
     def __init__(self):
         import os
         self.script_dir = Path(__file__).parent
+        # Store the working directory (where discover is run from - has Accounts/)
+        self.working_dir = Path.cwd()
         # Check for TERRAFORM_DIR environment variable (used in centralized workflow)
         terraform_dir_env = os.getenv('TERRAFORM_DIR')
         if terraform_dir_env:
-            self.project_root = Path(terraform_dir_env).resolve()
+            self.project_root = (self.working_dir / terraform_dir_env).resolve()
             debug_print(f"Using TERRAFORM_DIR from environment: {self.project_root}")
+            debug_print(f"Working directory (source files): {self.working_dir}")
         else:
             self.project_root = self.script_dir.parent
+            self.working_dir = self.project_root
             debug_print(f"Using default project root: {self.project_root}")
         
         self.accounts_config = self._load_accounts_config()
@@ -125,7 +129,7 @@ class S3DeploymentManager:
                                 debug_print(f"Found tfvars file {tfvars_file} for changed JSON {file}")
         else:
             # Find all tfvars files in Accounts directory
-            accounts_dir = self.project_root / "Accounts"
+            accounts_dir = self.working_dir / "Accounts"
             if accounts_dir.exists():
                 files = list(accounts_dir.glob("**/*.tfvars"))
             else:
@@ -280,7 +284,12 @@ class S3DeploymentManager:
                 shutil.rmtree(terraform_dir)
             
             # Copy tfvars file to terraform.tfvars in main directory
+            # Handle both relative and absolute paths
             tfvars_source = Path(deployment['file'])
+            if not tfvars_source.is_absolute():
+                # If relative, it's relative to working_dir (where Accounts/ is)
+                tfvars_source = self.working_dir / tfvars_source
+            
             tfvars_dest = main_dir / "terraform.tfvars"
             shutil.copy2(tfvars_source, tfvars_dest)
             debug_print(f"Copied {tfvars_source} -> {tfvars_dest}")
