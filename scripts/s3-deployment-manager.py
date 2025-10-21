@@ -311,7 +311,11 @@ class S3DeploymentManager:
                     f.write(f"Command: terraform {' '.join(init_cmd)}\n")
                     f.write(f"Exit Code: {init_result['returncode']}\n")
                     f.write(f"Working Directory: {main_dir}\n\n")
-                    f.write("=== COMPLETE OUTPUT ===\n")
+                    f.write("=== STDOUT ===\n")
+                    f.write(init_result.get('stdout', init_result['output']))
+                    f.write("\n\n=== STDERR ===\n")
+                    f.write(init_result.get('stderr', '(captured in output)'))
+                    f.write("\n\n=== COMBINED OUTPUT ===\n")
                     f.write(init_result['output'])
                 
                 # Print key parts of the error for immediate visibility
@@ -321,9 +325,17 @@ class S3DeploymentManager:
                 print(f"🚦 Exit Code: {init_result['returncode']}")
                 print(f"📄 Full output saved to: {init_error_file}")
                 
-                # Show last 20 lines of output
+                # Show stderr first (usually has the actual error)
+                if 'stderr' in init_result and init_result['stderr'].strip():
+                    stderr_lines = init_result['stderr'].strip().split('\n')
+                    print(f"\n🔴 STDERR ({len(stderr_lines)} lines):")
+                    for line in stderr_lines[-30:]:  # Last 30 lines of stderr
+                        if line.strip():
+                            print(f"   {line}")
+                
+                # Show last 20 lines of combined output
                 output_lines = init_result['output'].split('\n')
-                print(f"\n📋 LAST 20 LINES OF INIT OUTPUT:")
+                print(f"\n📋 LAST 20 LINES OF COMBINED OUTPUT:")
                 for line in output_lines[-20:]:
                     if line.strip():
                         print(f"   {line}")
@@ -493,20 +505,27 @@ class S3DeploymentManager:
             output = result.stdout + result.stderr
             clean_output = strip_ansi_colors(output)
             
-            # Save full terraform output to file for debugging
-            if 'plan' in cmd or 'apply' in cmd:
-                action = 'plan' if 'plan' in cmd else 'apply'
+            # Save full terraform output to file for debugging (including init)
+            if 'plan' in cmd or 'apply' in cmd or 'init' in cmd:
+                action = 'plan' if 'plan' in cmd else 'apply' if 'apply' in cmd else 'init'
                 output_file = cwd / f"terraform-{action}-debug.log"
                 with open(output_file, 'w') as f:
                     f.write(f"Command: {' '.join(full_cmd)}\n")
                     f.write(f"Return Code: {result.returncode}\n")
-                    f.write(f"STDOUT:\n{result.stdout}\n")
-                    f.write(f"STDERR:\n{result.stderr}\n")
+                    f.write(f"CWD: {cwd}\n\n")
+                    f.write(f"=== STDOUT ({len(result.stdout)} chars) ===\n")
+                    f.write(result.stdout if result.stdout else "(empty)\n")
+                    f.write(f"\n=== STDERR ({len(result.stderr)} chars) ===\n")
+                    f.write(result.stderr if result.stderr else "(empty)\n")
+                    f.write(f"\n=== COMBINED OUTPUT ===\n")
+                    f.write(clean_output)
                 debug_print(f"Full terraform output saved to: {output_file}")
             
             return {
                 'returncode': result.returncode,
-                'output': clean_output
+                'output': clean_output,
+                'stdout': result.stdout,
+                'stderr': result.stderr
             }
             
         except subprocess.TimeoutExpired:
