@@ -304,6 +304,30 @@ class S3DeploymentManager:
             
             init_result = self._run_terraform_command(init_cmd, main_dir)
             if init_result['returncode'] != 0:
+                # Save init output to file for debugging
+                init_error_file = main_dir / "terraform-init-error.log"
+                with open(init_error_file, 'w') as f:
+                    f.write(f"=== TERRAFORM INIT FAILED ===\n")
+                    f.write(f"Command: terraform {' '.join(init_cmd)}\n")
+                    f.write(f"Exit Code: {init_result['returncode']}\n")
+                    f.write(f"Working Directory: {main_dir}\n\n")
+                    f.write("=== COMPLETE OUTPUT ===\n")
+                    f.write(init_result['output'])
+                
+                # Print key parts of the error for immediate visibility
+                print(f"\n🚨 TERRAFORM INIT FAILED for {deployment['account_name']}/{deployment['region']}/{deployment['project']}")
+                print(f"📁 Working Directory: {main_dir}")
+                print(f"🔧 Command: terraform {' '.join(init_cmd)}")
+                print(f"🚦 Exit Code: {init_result['returncode']}")
+                print(f"📄 Full output saved to: {init_error_file}")
+                
+                # Show last 20 lines of output
+                output_lines = init_result['output'].split('\n')
+                print(f"\n📋 LAST 20 LINES OF INIT OUTPUT:")
+                for line in output_lines[-20:]:
+                    if line.strip():
+                        print(f"   {line}")
+                
                 return {
                     'deployment': deployment,
                     'success': False,

@@ -270,7 +270,7 @@ jobs:
             const hasChanges = '${{ steps.plan.outputs.has_changes }}';
             
             if (total && total !== '0') {
-              comment += `### � Terraform Plan Summary\n`;
+              comment += `### 📊 Terraform Plan Summary\n`;
               comment += `| Metric | Count |\n`;
               comment += `|--------|-------|\n`;
               comment += `| 📋 Total Deployments | ${total} |\n`;
