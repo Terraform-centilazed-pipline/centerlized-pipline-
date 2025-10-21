@@ -299,8 +299,15 @@ class TerraformOrchestrator:
             # that need to be available in the controller directory
             self._copy_referenced_policy_files(tfvars_source, main_dir, deployment)
             
-            # Initialize Terraform - NO state_key override, use providers.tf backend config
-            init_cmd = ['init', '-input=false']
+            # Initialize Terraform with backend config
+            # Use deployment['account_name'] which is the folder name (matches existing state files)
+            state_key = f"s3/{deployment['account_name']}/{deployment['region']}/{deployment['project']}/terraform.tfstate"
+            debug_print(f"State key: {state_key}")
+            init_cmd = [
+                'init', '-input=false',
+                f'-backend-config=key={state_key}',
+                f'-backend-config=region=us-east-1'
+            ]
             
             init_result = self._run_terraform_command(init_cmd, main_dir)
             if init_result['returncode'] != 0:
