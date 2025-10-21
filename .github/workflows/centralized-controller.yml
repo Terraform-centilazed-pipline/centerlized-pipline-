@@ -65,12 +65,8 @@ jobs:
           path: opa-policies
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Checkout Terraform Modules
-        uses: actions/checkout@v4
-        with:
-          repository: Terraform-centilazed-pipline/tf-module
-          path: tf-modules
-          token: ${{ steps.app-token.outputs.token }}
+      # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
+      # Module sources now use: git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/<NAME>
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -518,12 +514,8 @@ jobs:
           path: opa-policies
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Checkout Terraform Modules
-        uses: actions/checkout@v4
-        with:
-          repository: Terraform-centilazed-pipline/tf-module
-          path: tf-modules
-          token: ${{ steps.app-token.outputs.token }}
+      # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
+      # Module sources now use: git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/<NAME>
 
       - name: Setup Python
         uses: actions/setup-python@v4
