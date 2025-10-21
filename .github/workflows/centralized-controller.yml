@@ -26,6 +26,7 @@ jobs:
   terraform-controller:
     name: 🎯 Terraform Controller
     runs-on: ubuntu-latest
+    if: github.event.action == 'terraform_pr' || github.event.client_payload.action != 'apply'
     steps:
       - name: 📋 Event Details
         run: |
