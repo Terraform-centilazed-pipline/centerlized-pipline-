@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
 """
-Terraform Deployment Orchestrator
-Universal deployment manager for all AWS resources (S3, IAM, KMS, VPC, EC2, etc.)
-Supports multi-account, multi-region deployments with template-based approach
-
-Performance Optimizations:
-- Parallel discovery of deployment files
-- Efficient subprocess handling with proper timeouts
-- Minimal file I/O operations
-- Smart caching of account configurations
+Terraform Deployment Orchestrator - Universal AWS Resource Manager
+Manages all AWS resource deployments (S3, IAM, KMS, VPC, EC2, etc.) across multiple accounts and regions using template-based approach
 """
 
 import argparse
@@ -17,314 +10,254 @@ import os
 import re
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
+import time
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Tuple, Optional
 
 try:
     import yaml
-    HAS_YAML = True
 except ImportError:
-    HAS_YAML = False
+    # Fallback for environments without PyYAML
+    yaml = None
 
-DEBUG = False  # Global debug flag
+DEBUG = True
 
-
-def debug_print(msg: str) -> None:
-    """Print debug messages if DEBUG is enabled"""
+def debug_print(msg):
     if DEBUG:
         print(f"🐛 DEBUG: {msg}")
 
-
-def strip_ansi_colors(text: str) -> str:
-    """Remove ANSI color codes from text - optimized regex"""
-    return re.sub(r'\x1b\[[0-9;]*m', '', text)
-
+def strip_ansi_colors(text):
+    """Remove ANSI color codes from text"""
+    ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
+    bracket_codes = re.compile(r'\[(?:[0-9]+;?)*m')
+    text = ansi_escape.sub('', text)
+    text = bracket_codes.sub('', text)
+    return text
 
 class TerraformOrchestrator:
-    """Universal Terraform deployment orchestrator for all AWS resources"""
-    
-    __slots__ = ('script_dir', 'working_dir', 'project_root', 'accounts_config', 
-                 'templates_dir', '_terraform_env', '_deployment_cache')
+    """Terraform Deployment Orchestrator for multi-account, multi-resource deployments"""
     
     def __init__(self):
+        import os
         self.script_dir = Path(__file__).parent
+        # Store the working directory (where discover is run from - has Accounts/)
         self.working_dir = Path.cwd()
-        self._deployment_cache: Dict[str, Dict] = {}
-        
-        # Check for TERRAFORM_DIR environment variable (centralized workflow)
+        # Check for TERRAFORM_DIR environment variable (used in centralized workflow)
         terraform_dir_env = os.getenv('TERRAFORM_DIR')
         if terraform_dir_env:
             self.project_root = (self.working_dir / terraform_dir_env).resolve()
-            debug_print(f"TERRAFORM_DIR: {self.project_root}")
-            debug_print(f"Working directory: {self.working_dir}")
+            debug_print(f"Using TERRAFORM_DIR from environment: {self.project_root}")
+            debug_print(f"Working directory (source files): {self.working_dir}")
         else:
             self.project_root = self.script_dir.parent
             self.working_dir = self.project_root
-            debug_print(f"Project root: {self.project_root}")
+            debug_print(f"Using default project root: {self.project_root}")
         
-        self.templates_dir = self.project_root / "templates"
         self.accounts_config = self._load_accounts_config()
-        self._terraform_env = os.environ.copy()
+        self.templates_dir = self.project_root / "templates"
         
     def _load_accounts_config(self) -> Dict:
-        """Load accounts configuration - cached for performance"""
+        """Load accounts configuration from accounts.yaml (optional)"""
         accounts_file = self.project_root / "accounts.yaml"
-        
         if not accounts_file.exists():
-            debug_print("accounts.yaml not found, using defaults")
-            return {'accounts': {}, 'regions': {}, 'default_tags': {}}
+            debug_print(f"accounts.yaml not found at {accounts_file}, using defaults")
+            return {'accounts': {}, 's3_templates': {}, 'regions': {}, 'default_tags': {}}
         
-        try:
-            if HAS_YAML:
-                with open(accounts_file, 'r') as f:
-                    return yaml.safe_load(f) or {}
-            else:
-                # Lightweight YAML parser fallback
-                return self._parse_yaml_simple(accounts_file)
-        except Exception as e:
-            print(f"⚠️ Error loading accounts.yaml: {e}")
-            return {'accounts': {}, 'regions': {}, 'default_tags': {}}
+        if yaml is None:
+            # Simple YAML parser fallback if PyYAML not available
+            return self._parse_simple_yaml(accounts_file)
+        else:
+            with open(accounts_file, 'r') as f:
+                return yaml.safe_load(f)
     
-    def _parse_yaml_simple(self, file_path: Path) -> Dict:
-        """Minimal YAML parser for basic structure - optimized"""
-        config = {'accounts': {}, 'regions': {}, 'default_tags': {}}
+    def _parse_simple_yaml(self, file_path: Path) -> Dict:
+        """Simple YAML parser for basic accounts.yaml structure"""
+        config = {'accounts': {}, 's3_templates': {}, 'regions': {}, 'default_tags': {}}
+        current_section = None
+        current_account = None
         
         with open(file_path, 'r') as f:
-            lines = [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]
-        
-        current_section = None
-        current_key = None
-        
-        for line in lines:
-            if line.endswith(':') and not line.startswith(' '):
-                key = line[:-1]
-                if key in config:
-                    current_section = key
-                    current_key = None
-            elif ':' in line and current_section:
-                parts = line.split(':', 1)
-                key, value = parts[0].strip(), parts[1].strip().strip("'\"")
-                if current_section == 'accounts' and key.isdigit():
-                    current_key = key
-                    config['accounts'][current_key] = {}
-                elif current_key:
-                    config['accounts'][current_key][key] = value
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                if line.endswith(':'):
+                    key = line[:-1].strip("'\"")
+                    if key in ['accounts', 's3_templates', 'regions', 'default_tags']:
+                        current_section = key
+                        current_account = None
+                    elif current_section == 'accounts' and key.isdigit():
+                        current_account = key
+                        config['accounts'][current_account] = {}
+                elif ':' in line and current_section and current_account:
+                    key, value = line.split(':', 1)
+                    key = key.strip()
+                    value = value.strip().strip("'\"")
+                    config['accounts'][current_account][key] = value
         
         return config
     
-    def find_deployments(self, changed_files: Optional[List[str]] = None, 
-                        filters: Optional[Dict] = None) -> List[Dict]:
-        """
-        Discover deployments from filesystem - OPTIMIZED with parallel processing
-        
-        Args:
-            changed_files: List of changed files (from PR/Git)
-            filters: Dict of filters (account_name, region, environment, etc.)
-        
-        Returns:
-            List of deployment info dictionaries
-        """
-        print("🔍 Discovering deployments...")
-        debug_print(f"Working directory (where Accounts/ should be): {self.working_dir}")
-        debug_print(f"Project root (where main.tf is): {self.project_root}")
-        
-        accounts_dir = self.working_dir / "Accounts"
-        debug_print(f"Looking for Accounts directory at: {accounts_dir}")
-        
-        if not accounts_dir.exists():
-            print(f"⚠️ No Accounts directory found at {accounts_dir}")
-            # Try to list what IS in working_dir to help debug
-            if self.working_dir.exists():
-                try:
-                    contents = list(self.working_dir.iterdir())
-                    debug_print(f"Contents of {self.working_dir}: {[p.name for p in contents[:10]]}")
-                except Exception as e:
-                    debug_print(f"Could not list directory: {e}")
-            return []
-        
-        # Build file list to analyze
-        files_to_check: Set[Path] = set()
+    def find_deployments(self, changed_files=None, filters=None):
+        """Find S3 deployments to process"""
+        debug_print(f"find_deployments called with changed_files={changed_files}, filters={filters}")
         
         if changed_files:
-            # Only check changed files - CRITICAL: Only .tfvars are deployments!
-            debug_print(f"Checking {len(changed_files)} changed files")
+            print(f"📋 Processing {len(changed_files)} changed files")
             deployment_paths = set()
-            
-            for file_str in changed_files:
-                file_path = self.working_dir / file_str
-                
-                if not file_path.exists():
-                    continue
-                
-                if file_path.suffix == '.tfvars':
-                    # Direct tfvars file - this IS a deployment
-                    deployment_path = str(file_path.parent)
-                    if deployment_path not in deployment_paths:
-                        files_to_check.add(file_path)
-                        deployment_paths.add(deployment_path)
-                        
-                elif file_path.suffix == '.json':
-                    # JSON file changed - look for tfvars in same directory
-                    # The JSON is a policy, not a deployment itself
-                    deployment_dir = file_path.parent
-                    tfvars_files = list(deployment_dir.glob("*.tfvars"))
-                    for tfvars_file in tfvars_files:
-                        deployment_path = str(tfvars_file.parent)
+            files = []
+            for file in changed_files:
+                file_path = Path(file)
+                if file_path.exists():
+                    if file.endswith('.tfvars'):
+                        # Direct tfvars file
+                        deployment_path = str(file_path.parent)
                         if deployment_path not in deployment_paths:
-                            files_to_check.add(tfvars_file)
+                            files.append(file_path)  # Keep as Path object
                             deployment_paths.add(deployment_path)
-                            debug_print(f"Found tfvars {tfvars_file.name} for changed JSON {file_path.name}")
+                    elif file.endswith('.json'):
+                        # JSON file changed - look for tfvars in same directory
+                        deployment_dir = file_path.parent
+                        tfvars_files = list(deployment_dir.glob("*.tfvars"))
+                        for tfvars_file in tfvars_files:
+                            deployment_path = str(tfvars_file.parent)
+                            if deployment_path not in deployment_paths:
+                                files.append(tfvars_file)  # Keep as Path object
+                                deployment_paths.add(deployment_path)
+                                debug_print(f"Found tfvars file {tfvars_file} for changed JSON {file}")
         else:
-            # Scan all deployment files - ONLY .tfvars!
-            debug_print("Scanning all deployment files")
-            files_to_check.update(accounts_dir.glob('**/*.tfvars'))
+            # Find all tfvars files in Accounts directory
+            accounts_dir = self.working_dir / "Accounts"
+            if accounts_dir.exists():
+                files = list(accounts_dir.glob("**/*.tfvars"))
+            else:
+                files = []
         
-        if not files_to_check:
-            print("ℹ️ No deployment files found")
-            return []
-        
-        debug_print(f"Analyzing {len(files_to_check)} files...")
-        
-        # Parallel processing for large file sets
         deployments = []
-        if len(files_to_check) > 10:
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {executor.submit(self._analyze_deployment_file, f): f 
-                          for f in files_to_check}
-                
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result and self._matches_filters(result, filters):
-                        deployments.append(result)
-        else:
-            # Sequential for small sets (less overhead)
-            for file_path in files_to_check:
-                result = self._analyze_deployment_file(file_path)
-                if result and self._matches_filters(result, filters):
-                    deployments.append(result)
+        for file in files:
+            deployment_info = self._analyze_deployment_file(file)
+            if deployment_info and self._matches_filters(deployment_info, filters):
+                deployments.append(deployment_info)
         
-        print(f"✅ Found {len(deployments)} deployments")
         return deployments
     
-    def _analyze_deployment_file(self, file_path: Path) -> Optional[Dict]:
-        """Analyze a deployment file and extract metadata - OPTIMIZED"""
-        # Cache check
-        cache_key = str(file_path)
-        if cache_key in self._deployment_cache:
-            return self._deployment_cache[cache_key]
-        
+    def _analyze_deployment_file(self, tfvars_file: Path) -> Optional[Dict]:
+        """Analyze tfvars file and extract deployment information"""
         try:
-            # Fast path extraction from path structure
-            # Expected patterns:
-            # 1. Accounts/<account>/<region>/<project>/<file>  (4 parts after Accounts)
-            # 2. Accounts/<project>/<file>                      (2 parts after Accounts)
-            parts = file_path.parts
-            if 'Accounts' not in parts:
-                debug_print(f"Skipping {file_path}: No 'Accounts' in path")
-                return None
+            # Extract account and region from path structure
+            # Support both:
+            # 1. Full: Accounts/account-name/region/project/file.tfvars
+            # 2. Simple: Accounts/account-name/file.tfvars
+            path_parts = tfvars_file.parts
             
-            accounts_idx = parts.index('Accounts')
-            parts_after_accounts = len(parts) - accounts_idx - 1
-            
-            debug_print(f"Analyzing: {file_path.name}, parts after Accounts: {parts_after_accounts}")
-            
-            # Pattern 1: Full path with account/region/project/file
-            if parts_after_accounts >= 4:
-                account_name = parts[accounts_idx + 1]
-                region = parts[accounts_idx + 2]
-                project = parts[accounts_idx + 3]
-            # Pattern 2: Simplified path with project/file (use project as all identifiers)
-            elif parts_after_accounts >= 2:
-                project = parts[accounts_idx + 1]
-                account_name = project  # Use project name as account
-                region = 'us-east-1'  # Default region
-                debug_print(f"Using simplified pattern: project={project}")
-            else:
-                debug_print(f"Skipping {file_path}: Not enough path components ({parts_after_accounts} parts)")
-                return None
-            
-            # Get account ID from config (fast dict lookup)
-            account_id = (self.accounts_config.get('accounts', {})
-                         .get(account_name, {})
-                         .get('account_id', account_name))
-            
-            environment = (self.accounts_config.get('accounts', {})
-                          .get(account_id, {})
-                          .get('environment', 'poc'))
-            
-            result = {
-                'file': str(file_path),
-                'account_id': account_id,
-                'account_name': account_name,
-                'region': region,
-                'project': project,
-                'deployment_dir': str(file_path.parent),
-                'environment': environment
-            }
-            
-            # Cache for future calls
-            self._deployment_cache[cache_key] = result
-            return result
-            
-        except (IndexError, ValueError) as e:
-            debug_print(f"Error analyzing {file_path}: {e}")
-            return None
+            if "Accounts" in path_parts:
+                accounts_index = path_parts.index("Accounts")
+                
+                # Full structure: Accounts/account-name/region/project/file.tfvars
+                if len(path_parts) > accounts_index + 3:
+                    account_name = path_parts[accounts_index + 1]
+                    region = path_parts[accounts_index + 2]
+                    project = path_parts[accounts_index + 3]
+                    
+                    # Find account ID from accounts config
+                    account_id = None
+                    for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
+                        if acc_info.get('account_name') == account_name:
+                            account_id = acc_id
+                            break
+                    
+                    if account_id:
+                        return {
+                            'file': str(tfvars_file),
+                            'account_id': account_id,
+                            'account_name': account_name,
+                            'region': region,
+                            'project': project,
+                            'deployment_dir': str(tfvars_file.parent),
+                            'environment': self.accounts_config['accounts'][account_id].get('environment', 'unknown')
+                        }
+                
+                # Simple structure: Accounts/account-name/file.tfvars
+                elif len(path_parts) > accounts_index + 1:
+                    account_name = path_parts[accounts_index + 1]
+                    
+                    # Extract region from tfvars file name or use default
+                    region = "us-east-1"  # Default region
+                    
+                    # Check if accounts_config has this account
+                    account_id = None
+                    for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
+                        if acc_info.get('account_name') == account_name:
+                            account_id = acc_id
+                            region = acc_info.get('region', region)
+                            break
+                    
+                    # If no account config, use account_name as account_id
+                    if not account_id:
+                        account_id = account_name
+                        debug_print(f"No account config found for {account_name}, using as account_id")
+                    
+                    return {
+                        'file': str(tfvars_file),
+                        'account_id': account_id,
+                        'account_name': account_name,
+                        'region': region,
+                        'project': tfvars_file.stem,  # Use filename without extension as project
+                        'deployment_dir': str(tfvars_file.parent),
+                        'environment': self.accounts_config.get('accounts', {}).get(account_id, {}).get('environment', 'poc')
+                    }
+                    
+        except Exception as e:
+            debug_print(f"Error analyzing {tfvars_file}: {e}")
+        
+        return None
     
-    def _matches_filters(self, deployment: Dict, filters: Optional[Dict]) -> bool:
-        """Check if deployment matches filters - inline for speed"""
+    def _matches_filters(self, deployment_info: Dict, filters: Optional[Dict]) -> bool:
+        """Check if deployment matches provided filters"""
         if not filters:
             return True
-        return all(deployment.get(k) == v for k, v in filters.items())
+            
+        for key, value in filters.items():
+            if key in deployment_info and deployment_info[key] != value:
+                return False
+        return True
     
-    def execute_deployments(self, deployments: List[Dict], 
-                           action: str = "plan") -> Dict:
-        """
-        Execute terraform deployments - OPTIMIZED sequential processing
+    def execute_deployments(self, deployments: List[Dict], action: str = "plan") -> Dict:
+        """Execute terraform deployments using Terraform - sequential processing like KMS"""
+        results = {
+            'successful': [],
+            'failed': [],
+            'summary': {}
+        }
         
-        Args:
-            deployments: List of deployment info dicts
-            action: 'plan', 'apply', or 'destroy'
+        print(f"🚀 Starting {action} for {len(deployments)} deployments")
         
-        Returns:
-            Results dictionary with success/failure info
-        """
-        if not deployments:
-            print("ℹ️ No deployments to process")
-            return {
-                'successful': [],
-                'failed': [],
-                'summary': {'total': 0, 'successful': 0, 'failed': 0, 'action': action}
-            }
-        
-        print(f"🚀 Starting {action} for {len(deployments)} deployment(s)")
-        
-        results = {'successful': [], 'failed': []}
-        
-        # Sequential processing to avoid terraform.tfvars conflicts
+        # Process deployments sequentially to avoid terraform.tfvars conflicts
         for i, deployment in enumerate(deployments, 1):
-            dep_key = f"{deployment['account_name']}/{deployment['region']}/{deployment['project']}"
-            print(f"🔄 [{i}/{len(deployments)}] {dep_key}")
+            print(f"🔄 [{i}/{len(deployments)}] Processing {deployment['account_name']}/{deployment['region']}/{deployment['project']}")
             
             try:
-                result = self._process_single_deployment(deployment, action)
+                result = self._process_deployment(deployment, action)
                 if result['success']:
                     results['successful'].append(result)
-                    print(f"✅ {dep_key}: Success")
+                    print(f"✅ {deployment['account_name']}/{deployment['region']}: Success")
                 else:
                     results['failed'].append(result)
-                    print(f"❌ {dep_key}: Failed - {result.get('error', 'Unknown error')}")
-                    
+                    print(f"❌ {deployment['account_name']}/{deployment['region']}: Failed")
+                    if DEBUG:
+                        print(f"🔍 Error details: {result.get('output', 'No output')[:500]}")
+                        
             except Exception as e:
                 error_result = {
                     'deployment': deployment,
                     'success': False,
                     'error': str(e),
-                    'output': f"Exception: {e}"
+                    'output': f"Exception during processing: {e}"
                 }
                 results['failed'].append(error_result)
-                print(f"💥 {dep_key}: Exception - {e}")
+                print(f"💥 {deployment['account_name']}/{deployment['region']}: Exception - {e}")
         
         # Generate summary
         results['summary'] = {
@@ -334,39 +267,48 @@ class TerraformOrchestrator:
             'action': action
         }
         
-        print(f"📊 {results['summary']['successful']} successful, {results['summary']['failed']} failed")
+        print(f"📊 Summary: {results['summary']['successful']} successful, {results['summary']['failed']} failed")
         return results
     
-    def _process_single_deployment(self, deployment: Dict, action: str) -> Dict:
-        """Process a single deployment - OPTIMIZED with minimal I/O"""
+    def _process_deployment(self, deployment: Dict, action: str) -> Dict:
+        """Process a single deployment - following KMS pattern"""
+        import shutil
+        
+        # Run terraform in main directory like KMS script
         main_dir = self.project_root
         
         try:
-            # Clean .terraform directory if exists (faster than full cleanup)
+            # Clean any existing .terraform directory
             terraform_dir = main_dir / ".terraform"
             if terraform_dir.exists():
-                shutil.rmtree(terraform_dir, ignore_errors=True)
+                shutil.rmtree(terraform_dir)
             
-            # Copy tfvars file
+            # Copy tfvars file to terraform.tfvars in main directory
+            # Handle both relative and absolute paths
             tfvars_source = Path(deployment['file'])
             if not tfvars_source.is_absolute():
+                # If relative, it's relative to working_dir (where Accounts/ is)
                 tfvars_source = self.working_dir / tfvars_source
             
             tfvars_dest = main_dir / "terraform.tfvars"
             shutil.copy2(tfvars_source, tfvars_dest)
-            debug_print(f"Copied tfvars: {tfvars_source.name}")
+            debug_print(f"Copied {tfvars_source} -> {tfvars_dest}")
             
-            # Copy referenced policy files (optimized)
-            self._copy_policy_files(tfvars_source, main_dir, deployment)
+            # Copy policy JSON files referenced in tfvars (if any)
+            # This handles the case where tfvars references external JSON files
+            # that need to be available in the controller directory
+            self._copy_referenced_policy_files(tfvars_source, main_dir, deployment)
             
-            # Terraform init
-            init_result = self._run_terraform(['init', '-input=false'], main_dir)
+            # Initialize Terraform - NO state_key override, use providers.tf backend config
+            init_cmd = ['init', '-input=false']
+            
+            init_result = self._run_terraform_command(init_cmd, main_dir)
             if init_result['returncode'] != 0:
                 # Save init output to file for debugging
                 init_error_file = main_dir / "terraform-init-error.log"
                 with open(init_error_file, 'w') as f:
                     f.write(f"=== TERRAFORM INIT FAILED ===\n")
-                    f.write(f"Command: terraform init -input=false\n")
+                    f.write(f"Command: terraform {' '.join(init_cmd)}\n")
                     f.write(f"Exit Code: {init_result['returncode']}\n")
                     f.write(f"Working Directory: {main_dir}\n\n")
                     f.write("=== STDOUT ===\n")
@@ -379,7 +321,7 @@ class TerraformOrchestrator:
                 # Print key parts of the error for immediate visibility
                 print(f"\n🚨 TERRAFORM INIT FAILED for {deployment['account_name']}/{deployment['region']}/{deployment['project']}")
                 print(f"📁 Working Directory: {main_dir}")
-                print(f"🔧 Command: terraform init -input=false")
+                print(f"🔧 Command: terraform {' '.join(init_cmd)}")
                 print(f"🚦 Exit Code: {init_result['returncode']}")
                 print(f"📄 Full output saved to: {init_error_file}")
                 
@@ -405,55 +347,131 @@ class TerraformOrchestrator:
                     'output': init_result['output']
                 }
             
-            # Build command for specified action
+            # Run the specified action with enhanced error reporting
+            plan_file_path = None  # Initialize for all actions
             if action == "plan":
+                # Create plans directory if it doesn't exist
                 plans_dir = main_dir / "plans"
                 plans_dir.mkdir(exist_ok=True)
                 
-                plan_file = plans_dir / f"{deployment['account_name']}_{deployment['region']}_{deployment['project']}.tfplan"
-                cmd = ['plan', '-detailed-exitcode', '-input=false', 
-                       '-var-file=terraform.tfvars', '-no-color', '-out', str(plan_file)]
+                # Generate plan file name
+                plan_filename = f"{deployment['account_name']}_{deployment['region']}_{deployment['project']}.tfplan"
+                plan_file_path = plans_dir / plan_filename
                 
+                cmd = ['plan', '-detailed-exitcode', '-input=false', '-var-file=terraform.tfvars', '-no-color', '-out', str(plan_file_path)]
+                debug_print(f"Generating plan file: {plan_file_path}")
             elif action == "apply":
-                cmd = ['apply', '-auto-approve', '-input=false', 
-                       '-var-file=terraform.tfvars', '-no-color']
-                
+                cmd = ['apply', '-auto-approve', '-input=false', '-var-file=terraform.tfvars', '-no-color']
             elif action == "destroy":
-                cmd = ['destroy', '-auto-approve', '-input=false', 
-                       '-var-file=terraform.tfvars', '-no-color']
+                cmd = ['destroy', '-auto-approve', '-input=false', '-var-file=terraform.tfvars', '-no-color']
             else:
                 raise ValueError(f"Unknown action: {action}")
             
-            # Execute terraform command
-            result = self._run_terraform(cmd, main_dir)
+            # Set environment variables for more verbose terraform output
+            import os
+            env = os.environ.copy()
+            env['TF_LOG'] = 'DEBUG'  # Enable debug logging
+            env['TF_LOG_PATH'] = str(main_dir / f'terraform-{action}-verbose.log')
+            self._terraform_env = env  # Store for use in _run_terraform_command
             
-            # Determine success
-            # Plan: 0=no changes, 2=changes (both success), 1=error
-            # Apply/Destroy: 0=success, >0=error
-            is_success = ((action == "plan" and result['returncode'] in {0, 2}) or 
-                         (action != "plan" and result['returncode'] == 0))
+            result = self._run_terraform_command(cmd, main_dir)
             
+            # Enhanced error reporting with full output capture
+            # For terraform plan: 0=no changes, 1=error, 2=changes planned (success)
+            is_plan_error = (action == "plan" and result['returncode'] not in [0, 2]) or (action != "plan" and result['returncode'] != 0)
+            
+            if is_plan_error:
+                error_details = f"Terraform {action} failed (exit code: {result['returncode']})"
+                
+                # Save the complete terraform output to a separate error file for detailed analysis
+                error_output_file = main_dir / f"terraform-{action}-error-full.log"
+                with open(error_output_file, 'w') as f:
+                    f.write(f"=== FULL TERRAFORM {action.upper()} OUTPUT ===\n")
+                    f.write(f"Command: terraform {' '.join(cmd)}\n")
+                    f.write(f"Exit Code: {result['returncode']}\n")
+                    f.write(f"Working Directory: {main_dir}\n\n")
+                    f.write("=== COMPLETE OUTPUT ===\n")
+                    f.write(result['output'])
+                debug_print(f"Complete terraform output saved to: {error_output_file}")
+                
+                # Get the full terraform output for analysis
+                output_lines = result['output'].split('\n')
+                
+                # Print key diagnostic information immediately (won't be truncated)
+                print(f"\n🔍 TERRAFORM DIAGNOSTICS for {deployment['account_name']}/{deployment['region']}/{deployment['project']}:")
+                print(f"📁 Working Directory: {main_dir}")
+                print(f"📄 Tfvars File: {deployment['file']}")
+                print(f"🔧 Command: terraform {' '.join(cmd)}")
+                exit_status = "❌ ERROR" if result['returncode'] == 1 else "✅ SUCCESS WITH CHANGES" if result['returncode'] == 2 else f"Exit Code: {result['returncode']}"
+                print(f"🚦 Status: {exit_status}")
+                print(f"📊 Output Lines: {len(output_lines)}")
+                
+                # Look for specific terraform resource being processed
+                current_resource = "unknown"
+                for line in output_lines:
+                    if "will be created" in line or "will be updated" in line or "will be destroyed" in line:
+                        current_resource = line.strip()
+                        print(f"🎯 Last Resource Processing: {current_resource}")
+                        break
+                
+                # Find and display the actual error
+                actual_errors = []
+                for i, line in enumerate(output_lines):
+                    if any(word in line.lower() for word in ["error:", "failed", "invalid", "cannot", "╷"]):
+                        # Get surrounding context
+                        start = max(0, i-2)
+                        end = min(len(output_lines), i+5)
+                        error_context = output_lines[start:end]
+                        actual_errors.extend(error_context)
+                        if len(actual_errors) > 30:  # Limit to prevent overflow
+                            break
+                
+                if actual_errors:
+                    print(f"🚨 ACTUAL ERROR DETAILS:")
+                    for line in actual_errors:
+                        if line.strip():
+                            print(f"   {line}")
+                else:
+                    # Show last significant lines if no explicit errors found
+                    print(f"📋 LAST OUTPUT LINES:")
+                    for line in output_lines[-10:]:
+                        if line.strip():
+                            print(f"   {line}")
+                
+                # Keep the original error details for return value
+                error_details += f"\n\nSee terraform-{action}-error-full.log for complete output"
+            
+            # Determine success based on action type and exit code
+            is_successful = (action == "plan" and result['returncode'] in [0, 2]) or (action != "plan" and result['returncode'] == 0)
+            
+            # Prepare result with plan file info if applicable
             result_data = {
                 'deployment': deployment,
-                'success': is_success,
-                'error': None if is_success else f"Exit code: {result['returncode']}",
+                'success': is_successful,
+                'error': None if is_successful else error_details,
                 'output': result['output']
             }
             
-            # Add plan-specific data
-            if is_success and action == "plan":
-                result_data['plan_file'] = str(plan_file)
+            # Add plan file information for successful plans
+            if is_successful and action == "plan":
+                result_data['plan_file'] = str(plan_file_path)
                 result_data['has_changes'] = result['returncode'] == 2
+                debug_print(f"Plan generated successfully: {plan_file_path}")
+                debug_print(f"Changes detected: {result['returncode'] == 2}")
                 
-                # Generate artifacts (parallel possible, but sequential is cleaner)
-                markdown_file = self._save_plan_markdown(deployment, result['output'], 
-                                                        result['returncode'] == 2)
+                # Save plan output as markdown for PR comments
+                markdown_file = self._save_plan_as_markdown(deployment, result['output'], result['returncode'] == 2)
                 if markdown_file:
                     result_data['markdown_file'] = markdown_file
+                    print(f"✅ Generated markdown file: {markdown_file}")
                 
-                json_file = self._convert_plan_to_json(plan_file, main_dir)
-                if json_file:
-                    result_data['json_file'] = json_file
+                # Convert plan to JSON for OPA validation
+                json_file_path = self._convert_plan_to_json(plan_file_path, main_dir)
+                if json_file_path:
+                    result_data['json_file'] = json_file_path
+                    print(f"✅ Generated JSON file: {json_file_path}")
+                else:
+                    print(f"⚠️ Failed to convert {plan_file_path} to JSON - validation may be skipped")
             
             return result_data
             
@@ -462,66 +480,141 @@ class TerraformOrchestrator:
                 'deployment': deployment,
                 'success': False,
                 'error': str(e),
-                'output': f"Exception: {e}"
+                'output': f"Exception during {action}: {e}"
             }
     
-    def _copy_policy_files(self, tfvars_file: Path, dest_dir: Path, 
-                          deployment: Dict) -> None:
-        """Copy policy JSON files - OPTIMIZED with regex and smart search"""
-        try:
-            # Read file once
-            content = tfvars_file.read_text()
-            
-            # Fast regex to find all JSON file references
-            json_files = re.findall(r'["\']([Aa]ccounts/[^"\']+\.json)["\']', content)
-            
-            if not json_files:
-                return
-            
-            debug_print(f"Found {len(json_files)} policy references")
-            
-            for json_path in json_files:
-                filename = Path(json_path).name
-                
-                # Smart search: try most likely locations first
-                candidates = [
-                    self.working_dir / json_path,  # Exact path
-                    Path(deployment['deployment_dir']) / filename,  # Same dir
-                ]
-                
-                source_file = next((c for c in candidates if c.exists()), None)
-                
-                if source_file:
-                    dest_file = dest_dir / json_path
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_file, dest_file)
-                    debug_print(f"Copied policy: {filename}")
-                else:
-                    print(f"⚠️ Policy file not found: {filename}")
-                    
-        except Exception as e:
-            print(f"⚠️ Error copying policy files: {e}")
-    
-    def _run_terraform(self, cmd: List[str], cwd: Path) -> Dict:
-        """Run terraform command - OPTIMIZED subprocess handling"""
-        full_cmd = ['terraform'] + cmd
-        debug_print(f"Running: {' '.join(cmd)}")
+    def _copy_referenced_policy_files(self, tfvars_file: Path, dest_dir: Path, deployment: Dict):
+        """
+        Copy policy JSON files referenced in tfvars to the destination directory.
+        Maintains the same directory structure so Terraform can find them.
+        
+        Smart lookup:
+        1. Try the exact path from tfvars
+        2. If not found, look in the deployment directory
+        3. Copy to destination preserving the tfvars path
+        """
+        import shutil
+        import re
         
         try:
+            # Read tfvars file content
+            with open(tfvars_file, 'r') as f:
+                tfvars_content = f.read()
+            
+            # Find all JSON file references in the tfvars
+            # Look for patterns like: bucket_policy_file = "Accounts/xxx/yyy.json"
+            json_pattern = r'["\']([Aa]ccounts/[^"\']+\.json)["\']'
+            json_files = re.findall(json_pattern, tfvars_content)
+            
+            if not json_files:
+                debug_print("No policy JSON files referenced in tfvars")
+                return
+            
+            debug_print(f"Found {len(json_files)} policy file references in tfvars")
+            
+            for json_file_path in json_files:
+                # Get just the filename
+                filename = Path(json_file_path).name
+                debug_print(f"Looking for policy file: {filename}")
+                debug_print(f"  Referenced path: {json_file_path}")
+                debug_print(f"  Deployment dir: {deployment.get('deployment_dir', 'NOT SET')}")
+                
+                # Try to find the actual file
+                source_file = None
+                
+                # Option 1: Try the exact path from tfvars (relative to working_dir)
+                candidate1 = self.working_dir / json_file_path
+                debug_print(f"  Trying option 1 (tfvars path): {candidate1}")
+                if candidate1.exists():
+                    source_file = candidate1
+                    debug_print(f"✅ Found policy file at tfvars path: {candidate1}")
+                else:
+                    debug_print(f"  ❌ Not found at option 1")
+                    # Option 2: Look in the deployment directory
+                    deployment_dir = Path(deployment['deployment_dir'])
+                    if not deployment_dir.is_absolute():
+                        deployment_dir = self.working_dir / deployment_dir
+                    
+                    candidate2 = deployment_dir / filename
+                    debug_print(f"  Trying option 2 (deployment dir): {candidate2}")
+                    if candidate2.exists():
+                        source_file = candidate2
+                        debug_print(f"✅ Found policy file in deployment dir: {candidate2}")
+                    else:
+                        debug_print(f"  ❌ Not found at option 2")
+                        # Option 3: Search for the file in deployment directory recursively
+                        debug_print(f"  Trying option 3 (recursive search in {deployment_dir})")
+                        for found_file in deployment_dir.rglob(filename):
+                            source_file = found_file
+                            debug_print(f"✅ Found policy file recursively: {found_file}")
+                            break
+                        if not source_file:
+                            debug_print(f"  ❌ Not found in recursive search")
+                
+                if source_file:
+                    # Destination preserves the tfvars path (what terraform expects)
+                    dest_file = dest_dir / json_file_path
+                    
+                    # Create destination directory if needed
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Copy the policy file
+                    shutil.copy2(source_file, dest_file)
+                    print(f"✅ Copied policy file: {filename}")
+                    debug_print(f"   From: {source_file}")
+                    debug_print(f"   To:   {dest_file}")
+                else:
+                    print(f"⚠️ Warning: Policy file '{filename}' not found")
+                    print(f"   Searched in tfvars path: {self.working_dir / json_file_path}")
+                    print(f"   Searched in deployment: {deployment['deployment_dir']}")
+                    debug_print(f"Full tfvars path tried: {json_file_path}")
+                    
+        except Exception as e:
+            # Don't fail the deployment, just warn
+            print(f"⚠️ Warning: Error copying policy files: {e}")
+            debug_print(f"Error in _copy_referenced_policy_files: {e}")
+    
+    def _run_terraform_command(self, cmd: List[str], cwd: Path) -> Dict:
+        """Run terraform command and return result"""
+        full_cmd = ['terraform'] + cmd
+        debug_print(f"Running: {' '.join(full_cmd)} in {cwd}")
+        
+        try:
+            # Use enhanced environment if available (set in _process_deployment)
+            import os
+            env = getattr(self, '_terraform_env', os.environ.copy())
+            
             result = subprocess.run(
                 full_cmd,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
-                timeout=600,  # 10 min timeout
-                env=self._terraform_env
+                timeout=600,  # 10 minute timeout
+                env=env
             )
             
-            output = strip_ansi_colors(result.stdout + result.stderr)
+            output = result.stdout + result.stderr
+            clean_output = strip_ansi_colors(output)
+            
+            # Save full terraform output to file for debugging (including init)
+            if 'plan' in cmd or 'apply' in cmd or 'init' in cmd:
+                action = 'plan' if 'plan' in cmd else 'apply' if 'apply' in cmd else 'init'
+                output_file = cwd / f"terraform-{action}-debug.log"
+                with open(output_file, 'w') as f:
+                    f.write(f"Command: {' '.join(full_cmd)}\n")
+                    f.write(f"Return Code: {result.returncode}\n")
+                    f.write(f"CWD: {cwd}\n\n")
+                    f.write(f"=== STDOUT ({len(result.stdout)} chars) ===\n")
+                    f.write(result.stdout if result.stdout else "(empty)\n")
+                    f.write(f"\n=== STDERR ({len(result.stderr)} chars) ===\n")
+                    f.write(result.stderr if result.stderr else "(empty)\n")
+                    f.write(f"\n=== COMBINED OUTPUT ===\n")
+                    f.write(clean_output)
+                debug_print(f"Full terraform output saved to: {output_file}")
             
             return {
                 'returncode': result.returncode,
-                'output': output,
+                'output': clean_output,
                 'stdout': result.stdout,
                 'stderr': result.stderr
             }
@@ -529,73 +622,104 @@ class TerraformOrchestrator:
         except subprocess.TimeoutExpired:
             return {
                 'returncode': 1,
-                'output': f"Command timed out after 600s"
+                'output': f"Command timed out after 600 seconds: {' '.join(full_cmd)}"
             }
         except Exception as e:
             return {
                 'returncode': 1,
-                'output': f"Command error: {e}"
+                'output': f"Error running command: {e}"
             }
-    
-    def _convert_plan_to_json(self, plan_file: Path, main_dir: Path) -> Optional[str]:
-        """Convert plan to JSON - OPTIMIZED"""
+
+    def _convert_plan_to_json(self, plan_file_path: Path, main_dir: Path) -> Optional[str]:
+        """Convert terraform plan file to JSON format"""
         try:
+            # Generate JSON filename based on plan filename
+            plan_filename = plan_file_path.stem  # removes .tfplan extension
+            json_filename = f"{plan_filename}.json"
+            
+            # Create terraform-json directory in project root (where terraform runs)
             json_dir = self.project_root / "terraform-json"
             json_dir.mkdir(exist_ok=True)
+            json_file_path = json_dir / json_filename
             
-            json_file = json_dir / f"{plan_file.stem}.json"
-            
-            # Also create in working_dir if different
+            # Also create in working_dir if different (for centralized workflow)
+            working_json_dir = self.working_dir / "terraform-json"
             if self.working_dir != self.project_root:
-                working_json_dir = self.working_dir / "terraform-json"
                 working_json_dir.mkdir(exist_ok=True)
+                working_json_file_path = working_json_dir / json_filename
+            else:
+                working_json_file_path = json_file_path
             
+            debug_print(f"Converting {plan_file_path} to {json_file_path}")
+            
+            # Run terraform show -json to convert plan to JSON
             result = subprocess.run(
-                ['terraform', 'show', '-json', str(plan_file)],
+                ['terraform', 'show', '-json', str(plan_file_path)],
                 cwd=main_dir,
                 capture_output=True,
                 text=True,
-                timeout=300
+                timeout=300  # 5 minute timeout
             )
             
             if result.returncode == 0 and result.stdout:
-                # Validate JSON
-                json.loads(result.stdout)
+                # Validate JSON output
+                try:
+                    json.loads(result.stdout)  # Validate JSON
+                    
+                    # Write JSON to file in project root
+                    with open(json_file_path, 'w') as f:
+                        f.write(result.stdout)
+                    
+                    debug_print(f"Successfully converted plan to JSON: {json_file_path}")
+                    
+                    # Also write to working_dir if different (for centralized workflow)
+                    if self.working_dir != self.project_root:
+                        with open(working_json_file_path, 'w') as f:
+                            f.write(result.stdout)
+                        debug_print(f"Also copied JSON to working_dir: {working_json_file_path}")
+                    
+                    return str(json_file_path)
+                    
+                except json.JSONDecodeError as e:
+                    print(f"❌ Invalid JSON output from terraform show: {e}")
+                    return None
+            else:
+                print(f"❌ terraform show failed for {plan_file_path}")
+                print(f"Exit code: {result.returncode}")
+                print(f"Error: {result.stderr}")
+                return None
                 
-                # Write to file
-                json_file.write_text(result.stdout)
-                
-                # Copy to working_dir if different
-                if self.working_dir != self.project_root:
-                    (self.working_dir / "terraform-json" / json_file.name).write_text(result.stdout)
-                
-                debug_print(f"Converted plan to JSON: {json_file.name}")
-                return str(json_file)
-            
+        except subprocess.TimeoutExpired:
+            print(f"❌ terraform show timed out for {plan_file_path}")
             return None
-            
         except Exception as e:
-            debug_print(f"JSON conversion error: {e}")
+            print(f"❌ Error converting plan to JSON: {e}")
             return None
-    
-    def _save_plan_markdown(self, deployment: Dict, plan_output: str, 
-                           has_changes: bool) -> Optional[str]:
-        """Save plan as markdown - OPTIMIZED"""
+
+    def _save_plan_as_markdown(self, deployment: Dict, plan_output: str, has_changes: bool) -> Optional[str]:
+        """Save terraform plan output as markdown file for PR comments"""
         try:
+            # Create plan-markdown directory in project root
             markdown_dir = self.project_root / "plan-markdown"
             markdown_dir.mkdir(exist_ok=True)
             
-            # Also create in working_dir if different
+            # Also create in working_dir if different (for centralized workflow)
             if self.working_dir != self.project_root:
-                (self.working_dir / "plan-markdown").mkdir(exist_ok=True)
+                working_markdown_dir = self.working_dir / "plan-markdown"
+                working_markdown_dir.mkdir(exist_ok=True)
             
-            dep_name = f"{deployment['account_name']}-{deployment['region']}-{deployment['project']}"
-            markdown_file = markdown_dir / f"{dep_name}-plan.md"
+            # Generate markdown filename
+            deployment_name = f"{deployment['account_name']}-{deployment['region']}-{deployment['project']}"
+            markdown_filename = f"{deployment_name}-plan.md"
+            markdown_file_path = markdown_dir / markdown_filename
             
+            debug_print(f"Creating markdown plan file: {markdown_file_path}")
+            
+            # Create markdown content
             status_emoji = "🔄" if has_changes else "➖"
             status_text = "Changes Detected" if has_changes else "No Changes"
             
-            content = f"""### 📋 {dep_name}
+            markdown_content = f"""### 📋 {deployment_name}
 
 **Status:** {status_emoji} {status_text}
 
@@ -610,154 +734,147 @@ class TerraformOrchestrator:
 ---
 """
             
-            markdown_file.write_text(content)
+            # Write markdown to file
+            with open(markdown_file_path, 'w') as f:
+                f.write(markdown_content)
             
-            # Copy to working_dir if different
+            debug_print(f"Successfully created markdown plan: {markdown_file_path}")
+            
+            # Also write to working_dir if different (for centralized workflow)
             if self.working_dir != self.project_root:
-                (self.working_dir / "plan-markdown" / markdown_file.name).write_text(content)
+                working_markdown_file_path = working_markdown_dir / markdown_filename
+                with open(working_markdown_file_path, 'w') as f:
+                    f.write(markdown_content)
+                debug_print(f"Also copied markdown to working_dir: {working_markdown_file_path}")
             
-            debug_print(f"Saved markdown: {markdown_file.name}")
-            return str(markdown_file)
+            return str(markdown_file_path)
             
         except Exception as e:
-            debug_print(f"Markdown error: {e}")
+            print(f"❌ Error creating markdown plan: {e}")
             return None
 
 
 def main():
-    """Main entry point - OPTIMIZED argument parsing"""
-    parser = argparse.ArgumentParser(
-        description="Terraform Deployment Orchestrator - Universal AWS Resource Manager",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Discover all deployments
-  %(prog)s discover --output-summary deployments.json
-  
-  # Plan specific account
-  %(prog)s plan --account my-account --output-summary results.json
-  
-  # Apply from discovery JSON
-  %(prog)s apply --deployments-json deployments.json
-        """
-    )
-    
-    parser.add_argument('action', choices=['discover', 'plan', 'apply', 'destroy'],
-                       help='Action to perform')
+    parser = argparse.ArgumentParser(description="S3 Deployment Manager")
+    parser.add_argument('action', choices=['discover', 'plan', 'apply', 'destroy'], help='Action to perform')
     parser.add_argument("--account", help="Filter by account name")
     parser.add_argument("--region", help="Filter by region")
     parser.add_argument("--environment", help="Filter by environment")
     parser.add_argument("--changed-files", help="Space-separated changed files")
-    parser.add_argument("--output-summary", help="JSON output file path")
-    parser.add_argument("--deployments-json", help="Load deployments from JSON file")
-    parser.add_argument("--dry-run", action="store_true", 
-                       help="Show deployments without executing")
+    parser.add_argument("--output-summary", help="JSON output file")
+    parser.add_argument("--deployments-json", help="Load deployments from JSON")
+    parser.add_argument("--state-bucket", help="S3 bucket for Terraform state")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be deployed without executing")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     
     args = parser.parse_args()
     
-    # Set global debug flag
     global DEBUG
     DEBUG = args.debug
+    
+    debug_print(f"Arguments: {vars(args)}")
     
     try:
         orchestrator = TerraformOrchestrator()
         
         # Build filters
-        filters = {k: v for k, v in {
-            'account_name': args.account,
-            'region': args.region,
-            'environment': args.environment
-        }.items() if v}
+        filters = {}
+        if args.account:
+            filters['account_name'] = args.account
+        if args.region:
+            filters['region'] = args.region
+        if args.environment:
+            filters['environment'] = args.environment
         
         # Get deployments
         if args.deployments_json and Path(args.deployments_json).exists():
+            debug_print(f"Loading deployments from JSON: {args.deployments_json}")
             with open(args.deployments_json, 'r') as f:
                 data = json.load(f)
-            deployments = data.get('deployments', data if isinstance(data, list) else [])
+            deployments = data.get('deployments', data) if isinstance(data, dict) else data
         else:
+            debug_print("Discovering deployments from filesystem")
             changed_files = args.changed_files.split() if args.changed_files else None
             deployments = orchestrator.find_deployments(changed_files, filters)
         
-        print(f"🔍 Found {len(deployments)} deployment(s)")
+        print(f"🔍 Processing {len(deployments)} deployments")
         
-        # Initialize results
+        # Initialize results for all actions
         results = {}
         
         if args.action == 'discover':
-            # Discovery results
             results = {
-                'deployments': deployments,
-                'total_deployments': len(deployments)
+                'deployments': deployments, 
+                'total': len(deployments),
+                'total_deployments': len(deployments)  # Match what workflow expects
             }
             for dep in deployments:
-                dep['deployment_key'] = f"{dep['account_name']}-{dep['region']}-{dep['project']}"
-                dep['tfvars_file'] = dep['file']
-                print(f"   - {dep['deployment_key']}")
+                deployment_key = f"{dep['account_name']}-{dep['region']}-{dep['project']}"
+                dep['deployment_key'] = deployment_key
+                dep['tfvars_file'] = dep['file']  # Match KMS format
+                print(f"   - {deployment_key}: {dep['file']}")
         
-        elif args.action in {'plan', 'apply', 'destroy'}:
+        elif args.action in ['plan', 'apply', 'destroy']:
             if args.dry_run:
-                print("🔍 Dry run - no actions performed")
-                for dep in deployments:
-                    print(f"   Would {args.action}: {dep['account_name']}/{dep['region']}/{dep['project']}")
+                print("🔍 Dry run - no actions will be performed")
                 return
-            
+                
             # Execute deployments
-            exec_results = orchestrator.execute_deployments(deployments, args.action)
+            deployment_results = orchestrator.execute_deployments(deployments, args.action)
             
-            # Format results
-            action_suffix = 's' if args.action != 'apply' else 'ies'
+            # Format results to match KMS output
+            action_plural = f"{args.action}s" if args.action != 'apply' else 'applies'
             results = {
                 'total_deployments': len(deployments),
                 'plans': [],
                 'has_changes': False,
-                f'successful_{args.action}{action_suffix}': exec_results['summary']['successful'],
-                f'failed_{args.action}{action_suffix}': exec_results['summary']['failed']
+                f'successful_{action_plural}': deployment_results['summary']['successful'],
+                f'failed_{action_plural}': deployment_results['summary']['failed']
             }
             
-            for result in exec_results['successful']:
+            for result in deployment_results['successful']:
                 dep = result['deployment']
                 plan_entry = {
                     'deployment': f"{dep['account_name']}-{dep['region']}-{dep['project']}",
                     'status': 'success',
-                    'has_changes': result.get('has_changes', True)
+                    'has_changes': result.get('has_changes', True),  # Use actual detection
+                    'plan_output': result['output'][:500] + "..." if len(result['output']) > 500 else result['output']  # Brief summary for JSON
                 }
-                
+                # Add plan file information if available
                 if 'plan_file' in result:
                     plan_entry['plan_file'] = result['plan_file']
+                    debug_print(f"Plan file recorded: {result['plan_file']}")
                 
                 results['plans'].append(plan_entry)
-                if result.get('has_changes'):
+                if result.get('has_changes', True):
                     results['has_changes'] = True
-            
-            for result in exec_results['failed']:
+                
+            for result in deployment_results['failed']:
                 dep = result['deployment']
                 results['plans'].append({
                     'deployment': f"{dep['account_name']}-{dep['region']}-{dep['project']}",
                     'status': 'failed',
                     'has_changes': False,
-                    'error': result['error']
+                    'error': result['error'],
+                    'plan_output': result['output'][:500] + "..." if len(result['output']) > 500 else result['output']  # Brief summary for JSON
                 })
         
-        # Save results to JSON
+        # Save results to JSON if requested
         if args.output_summary:
             with open(args.output_summary, 'w') as f:
                 json.dump(results, f, indent=2)
             debug_print(f"Results saved to {args.output_summary}")
         
         # Exit with error if any deployments failed
-        if args.action in {'plan', 'apply', 'destroy'}:
-            failed_key = f'failed_{args.action}{"s" if args.action != "apply" else "ies"}'
-            if results.get(failed_key, 0) > 0:
-                exit(1)
-        
+        if args.action in ['plan', 'apply', 'destroy'] and results.get(f'failed_{args.action}s', 0) > 0:
+            exit(1)
+            
     except Exception as e:
         print(f"💥 Error: {e}")
         if args.debug:
             import traceback
             traceback.print_exc()
         exit(1)
-
 
 if __name__ == "__main__":
     main()
