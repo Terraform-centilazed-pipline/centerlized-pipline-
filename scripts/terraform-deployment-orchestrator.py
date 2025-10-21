@@ -362,6 +362,42 @@ class TerraformOrchestrator:
             # Terraform init
             init_result = self._run_terraform(['init', '-input=false'], main_dir)
             if init_result['returncode'] != 0:
+                # Save init output to file for debugging
+                init_error_file = main_dir / "terraform-init-error.log"
+                with open(init_error_file, 'w') as f:
+                    f.write(f"=== TERRAFORM INIT FAILED ===\n")
+                    f.write(f"Command: terraform init -input=false\n")
+                    f.write(f"Exit Code: {init_result['returncode']}\n")
+                    f.write(f"Working Directory: {main_dir}\n\n")
+                    f.write("=== STDOUT ===\n")
+                    f.write(init_result.get('stdout', init_result['output']))
+                    f.write("\n\n=== STDERR ===\n")
+                    f.write(init_result.get('stderr', '(captured in output)'))
+                    f.write("\n\n=== COMBINED OUTPUT ===\n")
+                    f.write(init_result['output'])
+                
+                # Print key parts of the error for immediate visibility
+                print(f"\n🚨 TERRAFORM INIT FAILED for {deployment['account_name']}/{deployment['region']}/{deployment['project']}")
+                print(f"📁 Working Directory: {main_dir}")
+                print(f"🔧 Command: terraform init -input=false")
+                print(f"🚦 Exit Code: {init_result['returncode']}")
+                print(f"📄 Full output saved to: {init_error_file}")
+                
+                # Show stderr first (usually has the actual error)
+                if 'stderr' in init_result and init_result['stderr'].strip():
+                    stderr_lines = init_result['stderr'].strip().split('\n')
+                    print(f"\n🔴 STDERR ({len(stderr_lines)} lines):")
+                    for line in stderr_lines[-30:]:  # Last 30 lines of stderr
+                        if line.strip():
+                            print(f"   {line}")
+                
+                # Show last 20 lines of combined output
+                output_lines = init_result['output'].split('\n')
+                print(f"\n📋 LAST 20 LINES OF COMBINED OUTPUT:")
+                for line in output_lines[-20:]:
+                    if line.strip():
+                        print(f"   {line}")
+                
                 return {
                     'deployment': deployment,
                     'success': False,
