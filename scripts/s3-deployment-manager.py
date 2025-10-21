@@ -520,31 +520,41 @@ class S3DeploymentManager:
             for json_file_path in json_files:
                 # Get just the filename
                 filename = Path(json_file_path).name
+                debug_print(f"Looking for policy file: {filename}")
+                debug_print(f"  Referenced path: {json_file_path}")
+                debug_print(f"  Deployment dir: {deployment.get('deployment_dir', 'NOT SET')}")
                 
                 # Try to find the actual file
                 source_file = None
                 
                 # Option 1: Try the exact path from tfvars (relative to working_dir)
                 candidate1 = self.working_dir / json_file_path
+                debug_print(f"  Trying option 1 (tfvars path): {candidate1}")
                 if candidate1.exists():
                     source_file = candidate1
-                    debug_print(f"Found policy file at tfvars path: {candidate1}")
+                    debug_print(f"✅ Found policy file at tfvars path: {candidate1}")
                 else:
+                    debug_print(f"  ❌ Not found at option 1")
                     # Option 2: Look in the deployment directory
                     deployment_dir = Path(deployment['deployment_dir'])
                     if not deployment_dir.is_absolute():
                         deployment_dir = self.working_dir / deployment_dir
                     
                     candidate2 = deployment_dir / filename
+                    debug_print(f"  Trying option 2 (deployment dir): {candidate2}")
                     if candidate2.exists():
                         source_file = candidate2
-                        debug_print(f"Found policy file in deployment dir: {candidate2}")
+                        debug_print(f"✅ Found policy file in deployment dir: {candidate2}")
                     else:
+                        debug_print(f"  ❌ Not found at option 2")
                         # Option 3: Search for the file in deployment directory recursively
+                        debug_print(f"  Trying option 3 (recursive search in {deployment_dir})")
                         for found_file in deployment_dir.rglob(filename):
                             source_file = found_file
-                            debug_print(f"Found policy file recursively: {found_file}")
+                            debug_print(f"✅ Found policy file recursively: {found_file}")
                             break
+                        if not source_file:
+                            debug_print(f"  ❌ Not found in recursive search")
                 
                 if source_file:
                     # Destination preserves the tfvars path (what terraform expects)
