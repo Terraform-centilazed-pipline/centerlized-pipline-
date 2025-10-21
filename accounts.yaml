@@ -1,0 +1,24 @@
+accounts:
+
+  # Workload Accounts
+  '802860742843':
+    account_name: arj-wkld-a-prd
+    environment: production
+
+  '982534358538':
+    account_name: arj-wkld-a-nonprd
+    environment: development
+  # Add new accounts here:
+  # new-account-name:
+  #   id: "123456789012"
+  #   name: "New Account Description"
+  #   environment: "environment-type"
+
+# Shared VPC Interface Endpoints per Region (one per region, shared across accounts)
+vpc_interface_endpoints:
+  us-east-1: "vpce-use1-interface-s3-shared"
+  us-west-2: "vpce-usw2-interface-s3-shared"
+  eu-west-1: "vpce-ew1-interface-s3-shared"
+  eu-central-1: "vpce-ec1-interface-s3-shared"
+  ap-southeast-1: "vpce-ase1-interface-s3-shared"
+  ap-southeast-2: "vpce-ase2-interface-s3-shared"
