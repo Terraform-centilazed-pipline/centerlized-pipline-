@@ -10,7 +10,7 @@ name: Centralized Controller
 
 on:
   repository_dispatch:
-    types: [terraform_pr]
+    types: [terraform_pr, terraform_apply]
 
 permissions:
   id-token: write
@@ -144,47 +144,90 @@ jobs:
             echo "has_deployments=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== STEP 2: TERRAFORM PLAN (using centralized main.tf) =====
+      # ===== STEP 2: TERRAFORM PLAN (using s3-deployment-manager.py) =====
       - name: 📋 Terraform Plan
         if: steps.discover.outputs.has_deployments == 'true'
         id: plan
-        working-directory: controller
+        working-directory: source-repo
         run: |
-          # Copy tfvars from source repo
-          cp -r ../source-repo/Accounts ./
-          cp -r ../source-repo/configs ./
+          echo "📋 Running terraform plan for multiple deployments..."
           
-          # Run terraform init and plan using centralized main.tf
-          terraform init
+          # Use the deployment manager to run plans and create artifacts
+          # This handles multiple deployments from different accounts properly
+          set +e  # Don't exit on error - we want to show results even if some plans fail
+          python3 ../controller/scripts/s3-deployment-manager.py plan \
+            --deployments-json deployments.json \
+            --output-summary plan-results.json \
+            --debug
           
-          terraform plan \
-            -var-file="../source-repo/$(echo '${{ steps.changed-files.outputs.files }}' | awk '{print $1}')" \
-            -out=tfplan \
-            -detailed-exitcode || exit_code=$?
+          plan_exit_code=$?
+          set -e  # Re-enable exit on error
           
-          if [ "${exit_code}" == "0" ]; then
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-          elif [ "${exit_code}" == "2" ]; then
-            echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "🔍 Deployment manager exit code: $plan_exit_code"
+          
+          if [ -f plan-results.json ]; then
+            total=$(jq -r '.total_deployments // 0' plan-results.json)
+            successful=$(jq -r '.successful_plans // 0' plan-results.json)
+            failed=$(jq -r '.failed_plans // 0' plan-results.json)
+            has_changes=$(jq -r '.has_changes // false' plan-results.json)
+            
+            echo "📊 Plan Results: $successful/$total successful, $failed failed"
+            
+            echo "total_deployments=$total" >> $GITHUB_OUTPUT
+            echo "successful_plans=$successful" >> $GITHUB_OUTPUT
+            echo "failed_plans=$failed" >> $GITHUB_OUTPUT
+            echo "has_changes=$has_changes" >> $GITHUB_OUTPUT
+            
+            # Select first plan for OPA validation
+            if [ -d "terraform-json" ] && [ "$successful" -gt 0 ]; then
+              mkdir -p canonical-plan
+              FIRST_JSON=$(ls terraform-json/*.json 2>/dev/null | head -n1)
+              if [ -n "$FIRST_JSON" ]; then
+                cp "$FIRST_JSON" canonical-plan/plan.json
+                echo "✅ Selected plan for OPA: $FIRST_JSON"
+                echo "opa_plan_ready=true" >> $GITHUB_OUTPUT
+              else
+                echo "⚠️ No JSON plans found for OPA validation"
+                echo "opa_plan_ready=false" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "⚠️ No successful plans for OPA validation"
+              echo "opa_plan_ready=false" >> $GITHUB_OUTPUT
+            fi
+            
+            # Continue workflow even if some plans failed
+            if [ "$successful" -gt 0 ]; then
+              echo "✅ Continuing workflow with $successful successful plans"
+              exit 0
+            else
+              echo "❌ No plans were successful"
+              exit 1
+            fi
+          else
+            echo "❌ No plan-results.json found"
+            exit 1
           fi
-          
-          terraform show -json tfplan > ../source-repo/terraform-plan.json
-          terraform show -no-color tfplan > ../source-repo/terraform-plan.txt
 
       # ===== STEP 3: OPA VALIDATION =====
       - name: 🛡️ OPA Validation
-        if: steps.plan.outputs.has_changes == 'true'
+        if: steps.plan.outputs.opa_plan_ready == 'true'
         id: opa
+        working-directory: source-repo
         run: |
-          cd source-repo
+          echo "🛡️ Running OPA validation on canonical plan..."
+          
+          if [ ! -f "canonical-plan/plan.json" ]; then
+            echo "❌ No canonical plan found"
+            exit 1
+          fi
           
           opa eval -d ../opa-policies/terraform/s3/ \
-            -i terraform-plan.json \
+            -i canonical-plan/plan.json \
             "data.terraform.s3.violations" \
             --format pretty > opa-result.txt || true
           
           violations=$(opa eval -d ../opa-policies/terraform/s3/ \
-            -i terraform-plan.json \
+            -i canonical-plan/plan.json \
             "data.terraform.s3.violations" \
             --format json | jq -r '.result[0].expressions[0].value // {} | keys | length')
           
@@ -196,11 +239,14 @@ jobs:
           else
             echo "validation_status=failed" >> $GITHUB_OUTPUT
             echo "❌ Validation failed: $violations violations"
+            
+            # Show violations
+            cat opa-result.txt
           fi
 
       # ===== STEP 4: POST PR COMMENT =====
       - name: 💬 Post PR Comment
-        if: always() && steps.changed-files.outputs.count > 0
+        if: always() && steps.discover.outputs.has_deployments == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -212,27 +258,60 @@ jobs:
             comment += `**PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
             comment += `**Branch**: \`${{ github.event.client_payload.pr_head_ref }}\`\n\n`;
             
-            // Changed files
-            const files = '${{ steps.changed-files.outputs.files }}'.split(' ');
-            comment += `### 📁 Changed Files (${files.length})\n`;
-            files.forEach(f => comment += `- \`${f}\`\n`);
-            comment += `\n`;
-            
             // Plan results
-            if ('${{ steps.plan.outputs.has_changes }}' === 'true') {
-              comment += `### 📋 Terraform Plan\n`;
-              comment += `\`\`\`terraform\n`;
+            const total = '${{ steps.plan.outputs.total_deployments }}';
+            const successful = '${{ steps.plan.outputs.successful_plans }}';
+            const failed = '${{ steps.plan.outputs.failed_plans }}';
+            const hasChanges = '${{ steps.plan.outputs.has_changes }}';
+            
+            if (total && total !== '0') {
+              comment += `### � Terraform Plan Summary\n`;
+              comment += `| Metric | Count |\n`;
+              comment += `|--------|-------|\n`;
+              comment += `| 📋 Total Deployments | ${total} |\n`;
+              comment += `| ✅ Successful Plans | ${successful} |\n`;
+              comment += `| ❌ Failed Plans | ${failed} |\n`;
+              comment += `| 🔄 Has Changes | ${hasChanges === 'true' ? 'Yes' : 'No'} |\n\n`;
+              
+              // Add detailed plan results if available
               try {
-                const plan = fs.readFileSync('source-repo/terraform-plan.txt', 'utf8');
-                // Truncate if too long
-                comment += plan.length > 60000 ? plan.substring(0, 60000) + '\n... (truncated)' : plan;
+                const planResults = fs.readFileSync('source-repo/plan-results.json', 'utf8');
+                const results = JSON.parse(planResults);
+                
+                if (results.plans && results.plans.length > 0) {
+                  comment += `### 📋 Deployment Details\n`;
+                  comment += `| Deployment | Status | Changes |\n`;
+                  comment += `|------------|--------|----------|\n`;
+                  
+                  results.plans.forEach(plan => {
+                    const status = plan.status === 'success' ? '✅' : '❌';
+                    const changes = plan.has_changes ? '🔄 Yes' : '➖ None';
+                    comment += `| ${plan.deployment} | ${status} | ${changes} |\n`;
+                  });
+                  comment += `\n`;
+                }
+                
+                // Add plan markdown if available
+                const planMarkdownDir = 'source-repo/plan-markdown';
+                if (fs.existsSync(planMarkdownDir)) {
+                  const markdownFiles = fs.readdirSync(planMarkdownDir).filter(f => f.endsWith('.md'));
+                  
+                  if (markdownFiles.length > 0) {
+                    comment += `### 🔧 Terraform Plans\n`;
+                    markdownFiles.forEach(file => {
+                      const content = fs.readFileSync(\`\${planMarkdownDir}/\${file}\`, 'utf8');
+                      // Truncate if too long
+                      const truncated = content.length > 5000 ? content.substring(0, 5000) + '\n... (truncated)' : content;
+                      comment += truncated + '\n\n';
+                    });
+                  }
+                }
               } catch (e) {
-                comment += 'Plan output not available\n';
+                console.log('Could not read plan results:', e.message);
               }
-              comment += `\`\`\`\n\n`;
             } else {
               comment += `### 📋 Terraform Plan\n`;
-              comment += `ℹ️ No changes detected\n\n`;
+              comment += `ℹ️ No deployments found or no changes detected\n\n`;
             }
             
             // OPA results
@@ -249,6 +328,8 @@ jobs:
                 const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
                 comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
               } catch (e) {}
+            } else if ('${{ steps.plan.outputs.opa_plan_ready }}' === 'false') {
+              comment += `⚠️ **Status**: SKIPPED - No successful plans for validation\n\n`;
             }
             
             comment += `\n---\n`;
@@ -263,8 +344,9 @@ jobs:
             });
 
       # ===== STEP 5: AUTO-MERGE OR CLOSE PR =====
-      - name: 🔀 Handle PR
+      - name: 🔀 Handle PR - Auto-merge if OPA Passed
         if: steps.opa.outputs.validation_status != ''
+        id: merge
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -275,22 +357,52 @@ jobs:
             const pr_number = ${{ github.event.client_payload.pr_number }};
             
             if (validation === 'passed') {
-              console.log('✅ OPA passed - merging PR');
+              console.log('✅ OPA passed - auto-merging PR');
               
               try {
-                await github.rest.pulls.merge({
+                const { data: mergeResult } = await github.rest.pulls.merge({
                   owner,
                   repo,
                   pull_number: pr_number,
                   merge_method: 'squash',
-                  commit_title: '[Terraform] Auto-merge: OPA validation passed'
+                  commit_title: '[Terraform] Auto-approved: OPA validation passed',
+                  commit_message: 'Automatically merged after successful OPA policy validation.\n\nAll security policies passed. Terraform changes approved for deployment.'
                 });
-                console.log('✅ PR merged');
+                
+                console.log('✅ PR merged successfully');
+                console.log('Merge SHA:', mergeResult.sha);
+                
+                // Set output for triggering apply job
+                core.setOutput('merged', 'true');
+                core.setOutput('merge_sha', mergeResult.sha);
+                
+                // Add success comment
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr_number,
+                  body: `✅ **PR Auto-Approved & Merged!**\n\n` +
+                        `🛡️ OPA validation passed - all security policies compliant\n` +
+                        `🔀 Changes have been merged to \`main\`\n` +
+                        `🚀 Terraform apply will begin automatically...\n\n` +
+                        `**Merge SHA**: \`${mergeResult.sha}\``
+                });
+                
               } catch (error) {
-                console.log('⚠️ Could not merge:', error.message);
+                console.log('❌ Could not merge:', error.message);
+                core.setOutput('merged', 'false');
+                
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr_number,
+                  body: `⚠️ **Auto-merge Failed**\n\nOPA validation passed, but automatic merge failed.\n\nError: ${error.message}\n\nPlease merge manually.`
+                });
               }
             } else if (validation === 'failed') {
               console.log('❌ OPA failed - closing PR');
+              
+              core.setOutput('merged', 'false');
               
               await github.rest.pulls.update({
                 owner,
@@ -303,11 +415,46 @@ jobs:
                 owner,
                 repo,
                 issue_number: pr_number,
-                body: `❌ **PR Closed: Policy Violations**\n\nThis PR was automatically closed due to ${${{ steps.opa.outputs.total_violations }}} OPA policy violations.\n\nPlease fix the violations and create a new PR.`
+                body: `❌ **PR Closed: Policy Violations**\n\n` +
+                      `🛡️ OPA validation failed with **${{ steps.opa.outputs.total_violations }} violations**\n\n` +
+                      `This PR has been automatically closed due to security policy violations.\n\n` +
+                      `**Required Actions**:\n` +
+                      `1. Review the OPA validation results above\n` +
+                      `2. Fix all policy violations in your configuration\n` +
+                      `3. Create a new PR with corrected changes\n\n` +
+                      `---\n` +
+                      `*Security policies must pass before changes can be merged.*`
               });
               
-              console.log('❌ PR closed');
+              console.log('❌ PR closed due to policy violations');
             }
+
+      # ===== STEP 6: TRIGGER TERRAFORM APPLY (after successful merge) =====
+      - name: 🚀 Trigger Terraform Apply
+        if: steps.merge.outputs.merged == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            console.log('🚀 Triggering Terraform Apply workflow...');
+            
+            // Dispatch apply event to this same workflow
+            await github.rest.repos.createDispatchEvent({
+              owner: 'Terraform-centilazed-pipline',
+              repo: 'centerlized-pipline-',
+              event_type: 'terraform_apply',
+              client_payload: {
+                source_owner: '${{ github.event.client_payload.source_owner }}',
+                source_repo: '${{ github.event.client_payload.source_repo }}',
+                pr_number: ${{ github.event.client_payload.pr_number }},
+                pr_url: '${{ github.event.client_payload.pr_url }}',
+                merge_commit_sha: '${{ steps.merge.outputs.merge_sha }}',
+                action: 'apply',
+                merged: 'true'
+              }
+            });
+            
+            console.log('✅ Apply workflow triggered');
 
       # ===== UPLOAD ARTIFACTS =====
       - name: 📦 Upload Artifacts
@@ -317,7 +464,249 @@ jobs:
           name: terraform-controller-results
           path: |
             source-repo/deployments.json
-            source-repo/terraform-plan.json
-            source-repo/terraform-plan.txt
+            source-repo/plan-results.json
+            source-repo/terraform-json/
+            source-repo/plan-markdown/
+            source-repo/canonical-plan/
+            source-repo/plans/
+            source-repo/logs/
             source-repo/opa-result.txt
-            controller/tfplan
+            source-repo/*.log
+
+  # =============================================================================
+  # TERRAFORM APPLY JOB - Runs after PR is merged (auto-merge after OPA passed)
+  # =============================================================================
+  terraform-apply:
+    name: 🚀 Terraform Apply (Post-Merge)
+    runs-on: ubuntu-latest
+    if: github.event.action == 'terraform_apply' || (github.event.client_payload.action == 'apply' && github.event.client_payload.merged == 'true')
+    steps:
+      - name: 📋 Apply Event Details
+        run: |
+          echo "🚀 Terraform Apply Event Received"
+          echo "Source Repo: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}"
+          echo "PR Number: ${{ github.event.client_payload.pr_number }}"
+          echo "Merged SHA: ${{ github.event.client_payload.merge_commit_sha }}"
+          echo "Action: ${{ github.event.client_payload.action }}"
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.GT_APP_ID }}
+          private_key: ${{ secrets.GT_APP_PRIVATE_KEY }}
+
+      - name: Checkout Centralized Controller Repo
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/centerlized-pipline-
+          path: controller
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout Source Dev Repo (main/merged branch)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}
+          ref: main
+          path: source-repo
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout OPA Policies
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/OPA-Poclies
+          path: opa-policies
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout Terraform Modules
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/tf-module
+          path: tf-modules
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install pyyaml boto3 jinja2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: terraform-apply
+
+      - name: Get Merged PR Files
+        id: merged-files
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: '${{ github.event.client_payload.source_owner }}',
+              repo: '${{ github.event.client_payload.source_repo }}',
+              pull_number: ${{ github.event.client_payload.pr_number }}
+            });
+            
+            const tfvarsFiles = files
+              .filter(f => f.filename.match(/\.(tfvars|yaml|yml|json)$/))
+              .filter(f => f.filename.startsWith('Accounts/') || f.filename.startsWith('configs/'))
+              .map(f => f.filename);
+            
+            console.log('Merged PR files:', tfvarsFiles);
+            core.setOutput('files', tfvarsFiles.join(' '));
+            core.setOutput('count', tfvarsFiles.length);
+
+      - name: 🔍 Discover Deployments for Apply
+        if: steps.merged-files.outputs.count > 0
+        id: discover
+        working-directory: source-repo
+        run: |
+          echo "🔍 Discovering deployments from merged PR..."
+          python3 ../controller/scripts/s3-deployment-manager.py discover \
+            --changed-files "${{ steps.merged-files.outputs.files }}" \
+            --output-summary deployments.json \
+            --debug
+          
+          total=$(jq -r '.total_deployments // 0' deployments.json)
+          echo "total=$total" >> $GITHUB_OUTPUT
+          
+          if [ "$total" -gt 0 ]; then
+            echo "✅ Found $total deployments to apply"
+            echo "has_deployments=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No deployments found"
+            echo "has_deployments=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🚀 Terraform Apply
+        if: steps.discover.outputs.has_deployments == 'true'
+        id: apply
+        working-directory: source-repo
+        run: |
+          echo "🚀 Running terraform apply for multiple deployments..."
+          
+          # Use the deployment manager to run applies
+          set +e  # Don't exit on error - we want to show results even if some applies fail
+          python3 ../controller/scripts/s3-deployment-manager.py apply \
+            --deployments-json deployments.json \
+            --output-summary apply-results.json \
+            --debug
+          
+          apply_exit_code=$?
+          set -e
+          
+          echo "🔍 Apply exit code: $apply_exit_code"
+          
+          if [ -f apply-results.json ]; then
+            total=$(jq -r '.total_deployments // 0' apply-results.json)
+            successful=$(jq -r '.successful_applies // 0' apply-results.json)
+            failed=$(jq -r '.failed_applies // 0' apply-results.json)
+            
+            echo "📊 Apply Results: $successful/$total successful, $failed failed"
+            
+            echo "total_deployments=$total" >> $GITHUB_OUTPUT
+            echo "successful_applies=$successful" >> $GITHUB_OUTPUT
+            echo "failed_applies=$failed" >> $GITHUB_OUTPUT
+            
+            if [ "$successful" -gt 0 ]; then
+              echo "✅ Applied $successful deployments successfully"
+              if [ "$failed" -gt 0 ]; then
+                echo "⚠️ $failed deployments failed"
+                exit 1
+              fi
+            else
+              echo "❌ No successful applies"
+              exit 1
+            fi
+          else
+            echo "❌ No apply-results.json found"
+            exit 1
+          fi
+
+      - name: 💬 Post Apply Results to Original PR
+        if: always() && steps.discover.outputs.has_deployments == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            
+            let comment = `## 🚀 Terraform Apply Results\n\n`;
+            comment += `**Merged PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
+            comment += `**Applied to**: \`main\` branch\n\n`;
+            
+            const total = '${{ steps.apply.outputs.total_deployments }}';
+            const successful = '${{ steps.apply.outputs.successful_applies }}';
+            const failed = '${{ steps.apply.outputs.failed_applies }}';
+            
+            if (total && total !== '0') {
+              comment += `### 📊 Apply Summary\n`;
+              comment += `| Metric | Count |\n`;
+              comment += `|--------|-------|\n`;
+              comment += `| 📋 Total Deployments | ${total} |\n`;
+              comment += `| ✅ Successful Applies | ${successful} |\n`;
+              comment += `| ❌ Failed Applies | ${failed} |\n\n`;
+              
+              // Add detailed results if available
+              try {
+                const applyResults = fs.readFileSync('source-repo/apply-results.json', 'utf8');
+                const results = JSON.parse(applyResults);
+                
+                if (results.applies && results.applies.length > 0) {
+                  comment += `### 📋 Deployment Details\n`;
+                  comment += `| Deployment | Status | Message |\n`;
+                  comment += `|------------|--------|----------|\n`;
+                  
+                  results.applies.forEach(apply => {
+                    const status = apply.status === 'success' ? '✅' : '❌';
+                    const message = apply.message || 'N/A';
+                    comment += `| ${apply.deployment} | ${status} | ${message.substring(0, 50)} |\n`;
+                  });
+                  comment += `\n`;
+                }
+              } catch (e) {
+                console.log('Could not read apply results:', e.message);
+              }
+              
+              if (failed === '0') {
+                comment += `\n✅ **All deployments applied successfully!**\n`;
+              } else {
+                comment += `\n⚠️ **Some deployments failed - check logs for details**\n`;
+              }
+            } else {
+              comment += `ℹ️ No deployments were applied\n`;
+            }
+            
+            comment += `\n---\n`;
+            comment += `🤖 *Centralized Controller - Apply* | `;
+            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            
+            await github.rest.issues.createComment({
+              owner: '${{ github.event.client_payload.source_owner }}',
+              repo: '${{ github.event.client_payload.source_repo }}',
+              issue_number: ${{ github.event.client_payload.pr_number }},
+              body: comment
+            });
+
+      - name: 📦 Upload Apply Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-apply-results
+          path: |
+            source-repo/deployments.json
+            source-repo/apply-results.json
+            source-repo/logs/
+            source-repo/*.log
