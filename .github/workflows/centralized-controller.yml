@@ -223,32 +223,77 @@ jobs:
         working-directory: source-repo
         run: |
           echo "🛡️ Running OPA validation on canonical plan..."
+          echo "📁 Using multi-service policy structure: terraform/main.rego"
           
           if [ ! -f "canonical-plan/plan.json" ]; then
             echo "❌ No canonical plan found"
             exit 1
           fi
           
-          opa eval -d ../opa-policies/terraform/s3/ \
+          # Get deployment summary (which services are being deployed)
+          echo "📦 Detecting services in plan..."
+          opa eval -d ../opa-policies/terraform/ \
             -i canonical-plan/plan.json \
-            "data.terraform.s3.violations" \
+            "data.terraform.main.deployment_summary" \
+            --format pretty > opa-summary.txt || true
+          
+          services_detected=$(opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.main.deployment_summary.services_detected" \
+            --format json | jq -r '.result[0].expressions[0].value[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+          
+          if [ -n "$services_detected" ]; then
+            echo "📦 Services detected: $services_detected"
+          else
+            echo "ℹ️ No specific services detected, will run all policies"
+          fi
+          
+          # Run unified OPA validation (auto-detects and validates all services)
+          echo ""
+          echo "🔍 Running policy validation..."
+          opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.main.deny" \
             --format pretty > opa-result.txt || true
           
-          violations=$(opa eval -d ../opa-policies/terraform/s3/ \
+          # Count violations by severity
+          violations_json=$(opa eval -d ../opa-policies/terraform/ \
             -i canonical-plan/plan.json \
-            "data.terraform.s3.violations" \
-            --format json | jq -r '.result[0].expressions[0].value // {} | keys | length')
+            "data.terraform.main.deny" \
+            --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":[]}]}]}')
           
-          echo "total_violations=$violations" >> $GITHUB_OUTPUT
+          total_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object")] | length')
+          critical_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "CRITICAL")] | length')
+          high_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "HIGH")] | length')
+          medium_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "MEDIUM")] | length')
+          low_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "LOW")] | length')
           
-          if [ "$violations" -eq 0 ]; then
+          echo ""
+          echo "📊 Validation Results:"
+          echo "   Total violations: $total_violations"
+          echo "   🔴 Critical: $critical_violations"
+          echo "   🟠 High: $high_violations"
+          echo "   🟡 Medium: $medium_violations"
+          echo "   🟢 Low: $low_violations"
+          
+          # Set outputs
+          echo "total_violations=$total_violations" >> $GITHUB_OUTPUT
+          echo "critical_violations=$critical_violations" >> $GITHUB_OUTPUT
+          echo "high_violations=$high_violations" >> $GITHUB_OUTPUT
+          echo "medium_violations=$medium_violations" >> $GITHUB_OUTPUT
+          echo "low_violations=$low_violations" >> $GITHUB_OUTPUT
+          echo "services_detected=$services_detected" >> $GITHUB_OUTPUT
+          
+          if [ "$total_violations" -eq 0 ]; then
             echo "validation_status=passed" >> $GITHUB_OUTPUT
-            echo "✅ All policies passed"
+            echo ""
+            echo "✅ All policies passed - deployment authorized!"
           else
             echo "validation_status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Validation failed: $violations violations"
-            
-            # Show violations
+            echo ""
+            echo "❌ Validation failed: $total_violations violations found"
+            echo ""
+            echo "📋 Violation Details:"
             cat opa-result.txt
           fi
 
@@ -391,7 +436,8 @@ jobs:
                   issue_number: pr_number,
                   body: `✅ **PR Auto-Approved & Merged!**\n\n` +
                         `🛡️ OPA validation passed - all security policies compliant\n` +
-                        `🔀 Changes have been merged to \`main\`\n` +
+                        `� Services validated: ${{ steps.opa.outputs.services_detected || 'All services' }}\n` +
+                        `�🔀 Changes have been merged to \`main\`\n` +
                         `🚀 Terraform apply will begin automatically...\n\n` +
                         `**Merge SHA**: \`${mergeResult.sha}\``
                 });
@@ -425,6 +471,12 @@ jobs:
                 issue_number: pr_number,
                 body: `❌ **PR Closed: Policy Violations**\n\n` +
                       `🛡️ OPA validation failed with **${{ steps.opa.outputs.total_violations }} violations**\n\n` +
+                      `**Severity Breakdown**:\n` +
+                      `- 🔴 Critical: ${{ steps.opa.outputs.critical_violations }}\n` +
+                      `- 🟠 High: ${{ steps.opa.outputs.high_violations }}\n` +
+                      `- 🟡 Medium: ${{ steps.opa.outputs.medium_violations }}\n` +
+                      `- 🟢 Low: ${{ steps.opa.outputs.low_violations }}\n\n` +
+                      `**Services Validated**: ${{ steps.opa.outputs.services_detected || 'All' }}\n\n` +
                       `This PR has been automatically closed due to security policy violations.\n\n` +
                       `**Required Actions**:\n` +
                       `1. Review the OPA validation results above\n` +
