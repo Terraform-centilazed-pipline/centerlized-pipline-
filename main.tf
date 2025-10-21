@@ -108,7 +108,7 @@ module "s3" {
   # Only create if there are S3 buckets to deploy
   count = length(local.processed_s3_buckets) > 0 ? 1 : 0
   
-  source = "../tf-module/Module/S3"
+  source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/S3?ref=main"
 
   common_tags = var.common_tags
   s3_buckets  = local.processed_s3_buckets
@@ -125,7 +125,7 @@ module "s3" {
 module "kms" {
   for_each = local.processed_kms_keys
   
-  source = "../tf-module/Module/KMS"
+  source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/KMS?ref=main"
 
   # Key configuration
   description              = try(each.value.description, "KMS key for ${each.key}")
@@ -162,7 +162,7 @@ module "iam" {
   # Only create if there are IAM resources to deploy
   count = (length(local.merged_iam_users) + length(local.merged_iam_roles) + length(local.merged_iam_policies)) > 0 ? 1 : 0
   
-  source = "../tf-module/Module/IAM"
+  source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/IAM?ref=main"
 
   # IAM Users
   users = local.merged_iam_users
