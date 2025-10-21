@@ -3,17 +3,8 @@
 # =============================================================================
 # This orchestrates multi-module deployments (S3, KMS, IAM, etc.)
 # Modules are sourced from the tf-module repository
+# Terraform block and providers are configured in providers.tf
 # =============================================================================
-
-terraform {
-  required_version = ">= 1.0"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.7"
-    }
-  }
-}
 
 # =============================================================================
 # DATA SOURCES
