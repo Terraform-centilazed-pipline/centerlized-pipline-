@@ -96,6 +96,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: terraform-controller
 
+      - name: Configure Git Authentication for Terraform Modules
+        run: |
+          echo "🔧 Configuring Git authentication for private Terraform modules..."
+          git config --global url."https://oauth2:${{ steps.app-token.outputs.token }}@github.com".insteadOf "https://github.com"
+          echo "✅ Git authentication configured for Terraform module downloads"
+
       # ===== Get changed files from PR =====
       - name: 🔍 Get Changed Files
         id: changed-files
@@ -538,6 +544,12 @@ jobs:
           role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: terraform-apply
+
+      - name: Configure Git Authentication for Terraform Modules
+        run: |
+          echo "🔧 Configuring Git authentication for private Terraform modules..."
+          git config --global url."https://oauth2:${{ steps.app-token.outputs.token }}@github.com".insteadOf "https://github.com"
+          echo "✅ Git authentication configured for Terraform module downloads"
 
       - name: Get Merged PR Files
         id: merged-files
