@@ -151,8 +151,11 @@ jobs:
         if: steps.discover.outputs.has_deployments == 'true'
         id: plan
         working-directory: source-repo
+        env:
+          TERRAFORM_DIR: ../controller
         run: |
           echo "📋 Running terraform plan for multiple deployments..."
+          echo "🔧 Terraform directory: $TERRAFORM_DIR"
           
           # Use the deployment manager to run plans and create artifacts
           # This handles multiple deployments from different accounts properly
@@ -598,8 +601,11 @@ jobs:
         if: steps.discover.outputs.has_deployments == 'true'
         id: apply
         working-directory: source-repo
+        env:
+          TERRAFORM_DIR: ../controller
         run: |
           echo "🚀 Running terraform apply for multiple deployments..."
+          echo "🔧 Terraform directory: $TERRAFORM_DIR"
           
           # Use the deployment manager to run applies
           set +e  # Don't exit on error - we want to show results even if some applies fail

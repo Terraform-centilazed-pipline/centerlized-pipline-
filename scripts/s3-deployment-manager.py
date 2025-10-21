@@ -40,8 +40,17 @@ class S3DeploymentManager:
     """S3 Deployment Manager for multi-account S3 bucket deployments"""
     
     def __init__(self):
+        import os
         self.script_dir = Path(__file__).parent
-        self.project_root = self.script_dir.parent
+        # Check for TERRAFORM_DIR environment variable (used in centralized workflow)
+        terraform_dir_env = os.getenv('TERRAFORM_DIR')
+        if terraform_dir_env:
+            self.project_root = Path(terraform_dir_env).resolve()
+            debug_print(f"Using TERRAFORM_DIR from environment: {self.project_root}")
+        else:
+            self.project_root = self.script_dir.parent
+            debug_print(f"Using default project root: {self.project_root}")
+        
         self.accounts_config = self._load_accounts_config()
         self.templates_dir = self.project_root / "templates"
         
