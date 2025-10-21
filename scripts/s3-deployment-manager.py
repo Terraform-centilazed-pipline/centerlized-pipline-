@@ -642,10 +642,18 @@ class S3DeploymentManager:
             plan_filename = plan_file_path.stem  # removes .tfplan extension
             json_filename = f"{plan_filename}.json"
             
-            # Create terraform-json directory in project root
+            # Create terraform-json directory in project root (where terraform runs)
             json_dir = self.project_root / "terraform-json"
             json_dir.mkdir(exist_ok=True)
             json_file_path = json_dir / json_filename
+            
+            # Also create in working_dir if different (for centralized workflow)
+            working_json_dir = self.working_dir / "terraform-json"
+            if self.working_dir != self.project_root:
+                working_json_dir.mkdir(exist_ok=True)
+                working_json_file_path = working_json_dir / json_filename
+            else:
+                working_json_file_path = json_file_path
             
             debug_print(f"Converting {plan_file_path} to {json_file_path}")
             
@@ -663,11 +671,18 @@ class S3DeploymentManager:
                 try:
                     json.loads(result.stdout)  # Validate JSON
                     
-                    # Write JSON to file
+                    # Write JSON to file in project root
                     with open(json_file_path, 'w') as f:
                         f.write(result.stdout)
                     
                     debug_print(f"Successfully converted plan to JSON: {json_file_path}")
+                    
+                    # Also write to working_dir if different (for centralized workflow)
+                    if self.working_dir != self.project_root:
+                        with open(working_json_file_path, 'w') as f:
+                            f.write(result.stdout)
+                        debug_print(f"Also copied JSON to working_dir: {working_json_file_path}")
+                    
                     return str(json_file_path)
                     
                 except json.JSONDecodeError as e:
@@ -692,6 +707,11 @@ class S3DeploymentManager:
             # Create plan-markdown directory in project root
             markdown_dir = self.project_root / "plan-markdown"
             markdown_dir.mkdir(exist_ok=True)
+            
+            # Also create in working_dir if different (for centralized workflow)
+            if self.working_dir != self.project_root:
+                working_markdown_dir = self.working_dir / "plan-markdown"
+                working_markdown_dir.mkdir(exist_ok=True)
             
             # Generate markdown filename
             deployment_name = f"{deployment['account_name']}-{deployment['region']}-{deployment['project']}"
@@ -724,6 +744,14 @@ class S3DeploymentManager:
                 f.write(markdown_content)
             
             debug_print(f"Successfully created markdown plan: {markdown_file_path}")
+            
+            # Also write to working_dir if different (for centralized workflow)
+            if self.working_dir != self.project_root:
+                working_markdown_file_path = working_markdown_dir / markdown_filename
+                with open(working_markdown_file_path, 'w') as f:
+                    f.write(markdown_content)
+                debug_print(f"Also copied markdown to working_dir: {working_markdown_file_path}")
+            
             return str(markdown_file_path)
             
         except Exception as e:
