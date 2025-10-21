@@ -148,17 +148,38 @@ class TerraformOrchestrator:
         files_to_check: Set[Path] = set()
         
         if changed_files:
-            # Only check changed files - fastest path
+            # Only check changed files - CRITICAL: Only .tfvars are deployments!
             debug_print(f"Checking {len(changed_files)} changed files")
+            deployment_paths = set()
+            
             for file_str in changed_files:
                 file_path = self.working_dir / file_str
-                if file_path.exists() and file_path.suffix in {'.tfvars', '.json', '.yaml', '.yml'}:
-                    files_to_check.add(file_path)
+                
+                if not file_path.exists():
+                    continue
+                
+                if file_path.suffix == '.tfvars':
+                    # Direct tfvars file - this IS a deployment
+                    deployment_path = str(file_path.parent)
+                    if deployment_path not in deployment_paths:
+                        files_to_check.add(file_path)
+                        deployment_paths.add(deployment_path)
+                        
+                elif file_path.suffix == '.json':
+                    # JSON file changed - look for tfvars in same directory
+                    # The JSON is a policy, not a deployment itself
+                    deployment_dir = file_path.parent
+                    tfvars_files = list(deployment_dir.glob("*.tfvars"))
+                    for tfvars_file in tfvars_files:
+                        deployment_path = str(tfvars_file.parent)
+                        if deployment_path not in deployment_paths:
+                            files_to_check.add(tfvars_file)
+                            deployment_paths.add(deployment_path)
+                            debug_print(f"Found tfvars {tfvars_file.name} for changed JSON {file_path.name}")
         else:
-            # Scan all deployment files - use glob for speed
+            # Scan all deployment files - ONLY .tfvars!
             debug_print("Scanning all deployment files")
-            for pattern in ['**/*.tfvars', '**/*.json', '**/*.yaml']:
-                files_to_check.update(accounts_dir.glob(pattern))
+            files_to_check.update(accounts_dir.glob('**/*.tfvars'))
         
         if not files_to_check:
             print("ℹ️ No deployment files found")
@@ -195,12 +216,6 @@ class TerraformOrchestrator:
             return self._deployment_cache[cache_key]
         
         try:
-            # CRITICAL: Only .tfvars files are deployment configs
-            # .json files are policies, .yaml are configs - not deployments
-            if file_path.suffix != '.tfvars':
-                debug_print(f"Skipping {file_path.name}: Not a tfvars file (type: {file_path.suffix})")
-                return None
-            
             # Fast path extraction from path structure
             # Expected patterns:
             # 1. Accounts/<account>/<region>/<project>/<file>  (4 parts after Accounts)
