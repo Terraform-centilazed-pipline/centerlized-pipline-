@@ -195,6 +195,12 @@ class TerraformOrchestrator:
             return self._deployment_cache[cache_key]
         
         try:
+            # CRITICAL: Only .tfvars files are deployment configs
+            # .json files are policies, .yaml are configs - not deployments
+            if file_path.suffix != '.tfvars':
+                debug_print(f"Skipping {file_path.name}: Not a tfvars file (type: {file_path.suffix})")
+                return None
+            
             # Fast path extraction from path structure
             # Expected patterns:
             # 1. Accounts/<account>/<region>/<project>/<file>  (4 parts after Accounts)
