@@ -46,10 +46,11 @@ class S3DeploymentManager:
         self.templates_dir = self.project_root / "templates"
         
     def _load_accounts_config(self) -> Dict:
-        """Load accounts configuration from accounts.yaml"""
+        """Load accounts configuration from accounts.yaml (optional)"""
         accounts_file = self.project_root / "accounts.yaml"
         if not accounts_file.exists():
-            raise FileNotFoundError(f"accounts.yaml not found at {accounts_file}")
+            debug_print(f"accounts.yaml not found at {accounts_file}, using defaults")
+            return {'accounts': {}, 's3_templates': {}, 'regions': {}, 'default_tags': {}}
         
         if yaml is None:
             # Simple YAML parser fallback if PyYAML not available
@@ -133,11 +134,15 @@ class S3DeploymentManager:
         """Analyze tfvars file and extract deployment information"""
         try:
             # Extract account and region from path structure
-            # Expected: Accounts/account-name/region/project/file.tfvars
+            # Support both:
+            # 1. Full: Accounts/account-name/region/project/file.tfvars
+            # 2. Simple: Accounts/account-name/file.tfvars
             path_parts = tfvars_file.parts
             
             if "Accounts" in path_parts:
                 accounts_index = path_parts.index("Accounts")
+                
+                # Full structure: Accounts/account-name/region/project/file.tfvars
                 if len(path_parts) > accounts_index + 3:
                     account_name = path_parts[accounts_index + 1]
                     region = path_parts[accounts_index + 2]
@@ -160,6 +165,37 @@ class S3DeploymentManager:
                             'deployment_dir': str(tfvars_file.parent),
                             'environment': self.accounts_config['accounts'][account_id].get('environment', 'unknown')
                         }
+                
+                # Simple structure: Accounts/account-name/file.tfvars
+                elif len(path_parts) > accounts_index + 1:
+                    account_name = path_parts[accounts_index + 1]
+                    
+                    # Extract region from tfvars file name or use default
+                    region = "us-east-1"  # Default region
+                    
+                    # Check if accounts_config has this account
+                    account_id = None
+                    for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
+                        if acc_info.get('account_name') == account_name:
+                            account_id = acc_id
+                            region = acc_info.get('region', region)
+                            break
+                    
+                    # If no account config, use account_name as account_id
+                    if not account_id:
+                        account_id = account_name
+                        debug_print(f"No account config found for {account_name}, using as account_id")
+                    
+                    return {
+                        'file': str(tfvars_file),
+                        'account_id': account_id,
+                        'account_name': account_name,
+                        'region': region,
+                        'project': tfvars_file.stem,  # Use filename without extension as project
+                        'deployment_dir': str(tfvars_file.parent),
+                        'environment': self.accounts_config.get('accounts', {}).get(account_id, {}).get('environment', 'poc')
+                    }
+                    
         except Exception as e:
             debug_print(f"Error analyzing {tfvars_file}: {e}")
         
