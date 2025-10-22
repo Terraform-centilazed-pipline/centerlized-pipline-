@@ -26,11 +26,6 @@ jobs:
   terraform-controller:
     name: 🎯 Terraform Controller
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/terraform-centilazed-pipline/terraform-opa-runner:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     if: github.event.action == 'terraform_pr' || github.event.client_payload.action != 'apply'
     steps:
       - name: 📋 Event Details
@@ -80,6 +75,19 @@ jobs:
           role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: terraform-controller
+
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: 🔧 Setup OPA
+        run: |
+          echo "📦 Installing OPA ${{ env.OPA_VERSION }}..."
+          curl -L -o opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x opa
+          sudo mv opa /usr/local/bin/
+          opa version
 
       - name: Configure Git Authentication for Terraform Modules
         run: |
