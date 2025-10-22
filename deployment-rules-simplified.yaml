@@ -1,0 +1,66 @@
+# Simplified Terrateam-style Deployment Rules
+# Clean project-based validation and cost control
+
+projects:
+  s3-management:
+    team: platform-team
+    cost_center: CC-1001
+    github_users:
+      - pragadeeswarpa
+      - dev-user-1
+      - platform-admin
+    monthly_budget: 1500
+    services:
+      - s3
+      - kms
+      - iam
+
+  database-management:
+    team: dev-team
+    cost_center: CC-3001
+    github_users:
+      - dev-lead
+      - db-admin
+      - pragadeeswarpa
+    monthly_budget: 2500
+    services:
+      - rds
+      - elasticache
+      - secretsmanager
+
+  test-poc-3:
+    team: prod-team
+    cost_center: CC-9999
+    github_users:
+      - prod-admin
+      - pragadeeswarpa
+    monthly_budget: 500
+    services:
+      - ec2
+      - s3
+      - cloudwatch
+
+teams:
+  platform-team:
+    description: Platform and Infrastructure Team
+  dev-team:
+    description: Development Team
+  prod-team:
+    description: Production Operations Team
+
+cost_centers:
+  CC-1001:
+    name: Platform Infrastructure
+    description: Core platform services and infrastructure
+  CC-3001:
+    name: Application Development
+    description: Development team resources
+  CC-9999:
+    name: Testing and POC
+    description: Testing and proof of concept resources
+
+approval_rules:
+  auto_approve_under: 50
+  tier1_threshold: 500    # Team lead approval
+  tier2_threshold: 2000   # Senior manager approval
+  tier3_threshold: 2000   # Executive approval required
