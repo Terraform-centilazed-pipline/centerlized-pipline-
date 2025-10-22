@@ -61,10 +61,23 @@ class PreDeploymentValidator:
             with open(tfvars_file, 'r') as f:
                 content = f.read()
             
-            # Parse tfvars (simple key = "value" format)
-            for line in content.split('\n'):
+            # Parse tfvars - handle both simple key=value and tags sections
+            lines = content.split('\n')
+            in_tags_section = False
+            
+            for line in lines:
                 line = line.strip()
                 if not line or line.startswith('#'):
+                    continue
+                
+                # Check if we're entering a tags section
+                if 'tags = {' in line or line.endswith('tags = {'):
+                    in_tags_section = True
+                    continue
+                
+                # Check if we're exiting tags section
+                if in_tags_section and line == '}':
+                    in_tags_section = False
                     continue
                 
                 if '=' in line:
@@ -72,17 +85,28 @@ class PreDeploymentValidator:
                     key = key.strip()
                     value = value.strip().strip('"').strip("'")
                     
-                    # Map to our metadata fields
-                    if key in ['application_name', 'project_name', 'project']:
-                        metadata['application'] = value
-                    elif key in ['team_name', 'team', 'owner_team']:
-                        metadata['team'] = value
-                    elif key in ['cost_center', 'costcenter', 'billing_code']:
-                        metadata['cost_center'] = value
-                    elif key == 'environment':
-                        metadata['environment'] = value
-                    elif key == 'account_name':
-                        metadata['account_name'] = value
+                    # Extract from tags section
+                    if in_tags_section:
+                        if key in ['Project', 'project']:
+                            metadata['application'] = value
+                        elif key in ['Environment', 'environment']:
+                            metadata['environment'] = value
+                        elif key in ['CostCenter', 'cost_center', 'billing_code']:
+                            metadata['cost_center'] = value
+                        elif key in ['Team', 'team', 'owner_team']:
+                            metadata['team'] = value
+                    else:
+                        # Extract from top-level variables (fallback)
+                        if key in ['application_name', 'project_name', 'project']:
+                            metadata['application'] = value
+                        elif key in ['team_name', 'team', 'owner_team']:
+                            metadata['team'] = value
+                        elif key in ['cost_center', 'costcenter', 'billing_code']:
+                            metadata['cost_center'] = value
+                        elif key == 'environment':
+                            metadata['environment'] = value
+                        elif key == 'account_name':
+                            metadata['account_name'] = value
             
             return metadata
             
@@ -113,9 +137,9 @@ class PreDeploymentValidator:
         return True, f"✅ No team validation required"
     
     def validate_cost_center(self, cost_center: str, team: str = None, application: str = None) -> Tuple[bool, str]:
-        """Validate cost center matches project requirement"""
+        """Validate cost center matches project requirement - now optional"""
         if not cost_center:
-            return False, "❌ No cost_center found in tfvars (required for billing)"
+            return True, "✅ Cost center not provided (optional for now)"
         
         projects = self.rules.get("projects", {})
         
@@ -189,14 +213,13 @@ class PreDeploymentValidator:
         
         # Check for missing required fields
         if not metadata['application']:
-            errors.append("❌ Missing required field: application_name or project_name")
-        if not metadata['cost_center']:
-            errors.append("❌ Missing required field: cost_center")
+            errors.append("❌ Missing required field: application_name, project_name, or Project tag")
+        # Note: cost_center is now optional
         # Note: team_name no longer required
         
         # Overall pass/fail  
-        # Only check required fields: application and cost_center
-        required_fields_valid = bool(metadata['application'] and metadata['cost_center'])
+        # Only check required fields: application (cost_center now optional)
+        required_fields_valid = bool(metadata['application'])
         passed = app_valid and team_valid and cc_valid and required_fields_valid
         
         return ValidationResult(
