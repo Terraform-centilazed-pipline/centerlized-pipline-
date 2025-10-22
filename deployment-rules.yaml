@@ -14,13 +14,6 @@ projects:
       - elasticache
       - secretsmanager
 
-  test-poc-3:
-    cost_center: CC-9999
-    services:
-      - ec2
-      - s3
-      - cloudwatch
-
 cost_centers:
   CC-1001: Platform Infrastructure
   CC-3001: Application Development

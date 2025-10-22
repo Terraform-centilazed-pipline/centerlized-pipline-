@@ -1,7 +1,7 @@
 ## ✅ **Pre-Deployment Validation Passed**
 
 **👤 PR Author:** @pragadeeswarpa
-**📄 Validated File:** `test-app2.tfvars`
+**📄 Validated File:** `../dev-deployment/Accounts/test-poc-3/test-poc-3.tfvars`
 
 ---
 
@@ -9,18 +9,18 @@
 
 | Check | Status | Details |
 |-------|--------|----------|
-| **Application/Project** | ✅ | `app2` |
+| **Application/Project** | ✅ | `test-poc-3` |
 | **Team Authorization** | ✅ | `None` |
-| **Cost Center** | ✅ | `CC-3001` |
+| **Cost Center** | ✅ | `None` |
 
 ### 📊 Deployment Metadata
 
 ```yaml
-Application: app2
+Application: test-poc-3
 Team: None
-Cost Center: CC-3001
-Environment: None
-Account: None
+Cost Center: None
+Environment: production
+Account: arj-wkld-a-prd
 ```
 
 ---

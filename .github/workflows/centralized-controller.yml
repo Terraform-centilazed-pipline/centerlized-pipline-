@@ -365,17 +365,42 @@ jobs:
             "data.terraform.main.deny" \
             --format pretty > opa-result.txt || true
           
-          # Count violations by severity
+          # Count violations by severity  
           violations_json=$(opa eval -d ../opa-policies/terraform/ \
             -i canonical-plan/plan.json \
             "data.terraform.main.deny" \
-            --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":[]}]}]}')
+            --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":{}}]}]}')
           
-          total_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object")] | length' 2>/dev/null || echo "0")
-          critical_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "CRITICAL")] | length' 2>/dev/null || echo "0")
-          high_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "HIGH")] | length' 2>/dev/null || echo "0")
-          medium_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "MEDIUM")] | length' 2>/dev/null || echo "0")
-          low_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "LOW")] | length' 2>/dev/null || echo "0")
+          # Parse violations from OPA object format - violations are stored as keys in the object
+          total_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object")] | length' 2>/dev/null || echo "0")
+             
+          critical_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "critical")] | length' 2>/dev/null || echo "0")
+             
+          high_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "high")] | length' 2>/dev/null || echo "0")
+             
+          medium_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "medium")] | length' 2>/dev/null || echo "0")
+             
+          low_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "low")] | length' 2>/dev/null || echo "0")
           
           # Ensure variables are numeric (default to 0 if empty, remove any whitespace/newlines)
           total_violations=$(echo "${total_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
