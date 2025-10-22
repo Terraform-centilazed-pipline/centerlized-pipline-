@@ -332,11 +332,18 @@ jobs:
             "data.terraform.main.deny" \
             --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":[]}]}]}')
           
-          total_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object")] | length')
-          critical_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "CRITICAL")] | length')
-          high_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "HIGH")] | length')
-          medium_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "MEDIUM")] | length')
-          low_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "LOW")] | length')
+          total_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object")] | length' || echo "0")
+          critical_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "CRITICAL")] | length' || echo "0")
+          high_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "HIGH")] | length' || echo "0")
+          medium_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "MEDIUM")] | length' || echo "0")
+          low_violations=$(echo "$violations_json" | jq -r '[.result[0].expressions[0].value // [] | if type == "array" then .[] else . end | select(type == "object" and .severity == "LOW")] | length' || echo "0")
+          
+          # Ensure variables are numeric (default to 0 if empty)
+          total_violations=${total_violations:-0}
+          critical_violations=${critical_violations:-0}
+          high_violations=${high_violations:-0}
+          medium_violations=${medium_violations:-0}
+          low_violations=${low_violations:-0}
           
           echo ""
           echo "📊 Validation Results:"
