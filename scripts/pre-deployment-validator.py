@@ -306,7 +306,7 @@ def main():
     pr_author = sys.argv[2]
     
     try:
-        validator = PreDeploymentValidator("deployment-rules.yaml")
+        validator = PreDeploymentValidator("../controller/deployment-rules.yaml")
         
         result = validator.validate_deployment(tfvars_file, pr_author)
         

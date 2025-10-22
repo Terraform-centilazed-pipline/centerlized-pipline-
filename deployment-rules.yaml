@@ -1,6 +1,6 @@
 # Simple Project Cost Center Validation
 projects:
-  app1:
+  test-poc-3:
     cost_center: CC-1001
     services:
       - s3
