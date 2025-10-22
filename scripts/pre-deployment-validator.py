@@ -64,6 +64,7 @@ class PreDeploymentValidator:
             # Parse tfvars - handle both simple key=value and tags sections
             lines = content.split('\n')
             in_tags_section = False
+            brace_count = 0
             
             for line in lines:
                 line = line.strip()
@@ -71,14 +72,19 @@ class PreDeploymentValidator:
                     continue
                 
                 # Check if we're entering a tags section
-                if 'tags = {' in line or line.endswith('tags = {'):
+                if 'tags = {' in line:
                     in_tags_section = True
+                    brace_count = 1
                     continue
                 
-                # Check if we're exiting tags section
-                if in_tags_section and line == '}':
-                    in_tags_section = False
-                    continue
+                # Track braces when in tags section
+                if in_tags_section:
+                    brace_count += line.count('{')
+                    brace_count -= line.count('}')
+                    
+                    if brace_count <= 0:
+                        in_tags_section = False
+                        continue
                 
                 if '=' in line:
                     key, value = line.split('=', 1)
@@ -116,7 +122,7 @@ class PreDeploymentValidator:
     def validate_application(self, application: str, environment: str) -> Tuple[bool, str]:
         """Validate application is in allowed list"""
         if not application:
-            return False, "❌ No application/project name found in tfvars"
+            return False, "❌ No Project tag found in tfvars"
         
         # Get allowed projects from rules
         projects = self.rules.get("projects", {})
@@ -311,7 +317,7 @@ class PreDeploymentValidator:
             comment += "3. Push changes to re-trigger validation\n\n"
             comment += "**Need help?**\n"
             comment += "- Check allowed values in [`deployment-rules.yaml`](../deployment-rules.yaml)\n"
-            comment += "- Contact your team lead or platform engineering\n\n"
+            comment += "- Contact your team lead or AWS Cloud engineering\n\n"
         
         comment += "---\n"
         comment += "*Pre-Deployment Validator | Centralized Terraform Controller*"
