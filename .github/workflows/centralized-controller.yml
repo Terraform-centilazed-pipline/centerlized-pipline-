@@ -26,6 +26,11 @@ jobs:
   terraform-controller:
     name: 🎯 Terraform Controller
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/terraform-centilazed-pipline/terraform-opa-runner:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     if: github.event.action == 'terraform_pr' || github.event.client_payload.action != 'apply'
     steps:
       - name: 📋 Event Details
@@ -68,27 +73,6 @@ jobs:
 
       # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
       # Module sources now use: git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/<NAME>
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install Dependencies
-        run: |
-          pip install pyyaml boto3 jinja2
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-          terraform_wrapper: false
-
-      - name: Install OPA
-        run: |
-          curl -L -o opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
-          chmod +x opa
-          sudo mv opa /usr/local/bin/
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -299,6 +283,18 @@ jobs:
             echo "❌ No canonical plan found"
             exit 1
           fi
+          
+          # Debug: Show plan.json structure for troubleshooting
+          echo "🔍 DEBUG: Plan JSON structure:"
+          echo "📄 File size: $(wc -c < canonical-plan/plan.json) bytes"
+          echo "📋 Plan JSON preview (first 500 chars):"
+          head -c 500 canonical-plan/plan.json || true
+          echo ""
+          echo "🔧 Resource changes count:"
+          jq -r '.resource_changes | length' canonical-plan/plan.json 2>/dev/null || echo "Could not parse resource_changes"
+          echo "🎯 Resource types:"
+          jq -r '.resource_changes[]?.type' canonical-plan/plan.json 2>/dev/null | sort | uniq -c || echo "Could not parse resource types"
+          echo ""
           
           # Get deployment summary (which services are being deployed)
           echo "📦 Detecting services in plan..."
