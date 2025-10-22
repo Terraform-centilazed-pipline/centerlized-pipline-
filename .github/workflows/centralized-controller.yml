@@ -292,16 +292,22 @@ jobs:
             exit 1
           fi
           
-          # Debug: Show plan.json structure for troubleshooting
-          echo "🔍 DEBUG: Plan JSON structure:"
+          # Debug: Show complete plan.json structure for troubleshooting
+          echo "🔍 DEBUG: Complete Plan JSON Analysis:"
           echo "📄 File size: $(wc -c < canonical-plan/plan.json) bytes"
-          echo "📋 Plan JSON preview (first 500 chars):"
-          head -c 500 canonical-plan/plan.json || true
           echo ""
-          echo "🔧 Resource changes count:"
+          echo "📋 FULL PLAN JSON CONTENT:"
+          echo "===================================================================================="
+          cat canonical-plan/plan.json | jq '.' || cat canonical-plan/plan.json
+          echo "===================================================================================="
+          echo ""
+          echo "🔧 Resource changes analysis:"
           jq -r '.resource_changes | length' canonical-plan/plan.json 2>/dev/null || echo "Could not parse resource_changes"
-          echo "🎯 Resource types:"
-          jq -r '.resource_changes[]?.type' canonical-plan/plan.json 2>/dev/null | sort | uniq -c || echo "Could not parse resource types"
+          echo "🎯 Resource types with details:"
+          jq -r '.resource_changes[] | "\(.type) - \(.address) - Actions: \(.change.actions | join(","))"' canonical-plan/plan.json 2>/dev/null || echo "Could not parse resource details"
+          echo ""
+          echo "🔍 S3 bucket policy content (if exists):"
+          jq -r '.resource_changes[] | select(.type == "aws_s3_bucket_policy") | .change.after.policy' canonical-plan/plan.json 2>/dev/null || echo "No S3 bucket policy found"
           echo ""
           
           # Get deployment summary (which services are being deployed)
@@ -322,8 +328,37 @@ jobs:
             echo "ℹ️ No specific services detected, will run all policies"
           fi
           
-          # Run unified OPA validation (auto-detects and validates all services)
           echo ""
+          echo "🔍 DETAILED OPA DEBUGGING:"
+          echo "===================================================================================="
+          
+          # Test S3 resource detection specifically
+          echo "🔧 Testing S3 resource detection:"
+          opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.main.has_s3_resources" \
+            --format pretty || echo "Failed to check S3 resources"
+            
+          # Test direct S3 policy evaluation
+          echo ""
+          echo "🔧 Testing direct S3 policy evaluation:"
+          opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.s3.deny" \
+            --format pretty || echo "Failed to evaluate S3 policies"
+            
+          # Check if common module is available
+          echo ""
+          echo "🔧 Testing common module availability:"
+          opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.common" \
+            --format pretty || echo "Common module not available"
+          
+          echo "===================================================================================="
+          echo ""
+          
+          # Run unified OPA validation (auto-detects and validates all services)
           echo "🔍 Running policy validation..."
           opa eval -d ../opa-policies/terraform/ \
             -i canonical-plan/plan.json \
