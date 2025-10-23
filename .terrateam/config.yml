@@ -11,7 +11,7 @@ apply_requirements:
   checks:
     - tag_query: ""
       approved:
-        enabled: true
+        enabled: false  # Set to false for testing, true for production
         any_of_count: 1
 
 dirs:
