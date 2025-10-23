@@ -1,34 +1,44 @@
-# .terrateam/config.yml (centralized pipeline repo)
+# Terrateam Configuration for Centralized Pipeline
 
-# enable the repo indexer so Terrateam discovers modules and dependencies
-indexer:
-  enabled: true
+access_control:
+  policies:
+    - tag_query: ""
+      plan: ["*"]
+      apply: ["team:platform", "team:sre"]
 
-# dirs maps directories to workspaces and when they should be triggered
+apply_requirements:
+  create_pending_apply_check: true
+  checks:
+    - tag_query: ""
+      approved:
+        enabled: true
+        any_of_count: 1
+
 dirs:
-  # top-level repo directory: you can map specific subdirs if you want
-  .:
+  ".":
+    tags: ["centralized"]
     when_modified:
-      # adjust these patterns to match your repo layout
       file_patterns:
-        - "${DIR}/**/*.tf"
-        - "${DIR}/**/*.tfvars"
-        - "modules/**"
+        - "*.tf"
+        - "modules/**/*.tf"
+        - "scripts/**/*.py"
 
-# run OPA policy validation before plan (pre-plan hook)
 hooks:
-  plan:
+  all:
     pre:
       - type: run
-        # run your OPA validation script; adjust path as required
-        cmd: ["bash", "./scripts/opa-validate.sh"]
+        cmd: ["python3", ".terrateam/scripts/team-manager.py", "identify-team"]
+      - type: run
+        cmd: ["python3", ".terrateam/scripts/update-modules.py"]
+      - type: run
+        cmd: ["python3", ".terrateam/scripts/opa-validate.py"]
 
-# optional: use a simple workflow that explicitly runs init/plan/apply
 workflows:
-  - tag_query: ""   # apply to all workspaces
+  - tag_query: "centralized"
     plan:
       - type: init
       - type: plan
     apply:
       - type: init
+      - type: plan
       - type: apply

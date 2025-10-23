@@ -1,0 +1,59 @@
+# ArgoCD Application for Terraform GitOps
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: terraform-infrastructure
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Terraform-centilazed-pipline/dev-deployment.git
+    targetRevision: main
+    path: .
+    plugin:
+      name: terraform-cmp
+      env:
+        - name: TF_VAR_account_configs
+          value: "/tmp/account-configs"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: terraform-deployments
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+---
+# ConfigMap for Terraform configurations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: terraform-controller-config
+  namespace: terraform-deployments
+data:
+  controller.yaml: |
+    terraform:
+      version: "1.11.0"
+      parallelism: 10
+      timeout: "2h"
+    opa:
+      version: "0.59.0"
+      policies_repo: "https://github.com/Terraform-centilazed-pipline/OPA-Policies.git"
+    aws:
+      region: "us-east-1"
+      role_arn: "${AWS_TERRAFORM_ROLE_ARN}"
+    notifications:
+      slack:
+        webhook_url: "${SLACK_WEBHOOK_URL}"
+      github:
+        token: "${GITHUB_TOKEN}"

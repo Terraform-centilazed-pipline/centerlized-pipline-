@@ -587,32 +587,84 @@ jobs:
               console.log('❌ PR closed due to policy violations');
             }
 
-      # ===== STEP 6: TRIGGER TERRAFORM APPLY (after successful merge) =====
-      - name: 🚀 Trigger Terraform Apply
+      # ===== STEP 6: TRIGGER ARGOCD SYNC (instead of direct apply) =====
+      - name: 🚀 Trigger ArgoCD Sync
         if: steps.merge.outputs.merged == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            console.log('🚀 Triggering Terraform Apply workflow...');
+            console.log('🚀 Triggering ArgoCD sync for Terraform deployment...');
             
-            // Dispatch apply event to this same workflow
-            await github.rest.repos.createDispatchEvent({
-              owner: 'Terraform-centilazed-pipline',
-              repo: 'centerlized-pipline-',
-              event_type: 'terraform_apply',
-              client_payload: {
-                source_owner: '${{ github.event.client_payload.source_owner }}',
-                source_repo: '${{ github.event.client_payload.source_repo }}',
-                pr_number: ${{ github.event.client_payload.pr_number }},
-                pr_url: '${{ github.event.client_payload.pr_url }}',
-                merge_commit_sha: '${{ steps.merge.outputs.merge_sha }}',
-                action: 'apply',
-                merged: 'true'
+            // Instead of running terraform apply directly, 
+            // trigger ArgoCD to sync the infrastructure
+            const argocdApi = 'https://argocd.your-domain.com/api/v1';
+            const appName = 'terraform-infrastructure';
+            
+            try {
+              // Trigger ArgoCD application sync
+              const response = await fetch(`${argocdApi}/applications/${appName}/sync`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${{ secrets.ARGOCD_TOKEN }}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  revision: 'main',
+                  prune: true,
+                  dryRun: false,
+                  strategy: {
+                    apply: {
+                      force: false
+                    }
+                  }
+                })
+              });
+              
+              if (response.ok) {
+                const result = await response.json();
+                console.log('✅ ArgoCD sync triggered successfully');
+                console.log('Sync operation ID:', result.metadata?.name);
+                
+                // Post success comment
+                await github.rest.issues.createComment({
+                  owner: '${{ github.event.client_payload.source_owner }}',
+                  repo: '${{ github.event.client_payload.source_repo }}',
+                  issue_number: ${{ github.event.client_payload.pr_number }},
+                  body: `✅ **ArgoCD Deployment Triggered!**\n\n` +
+                        `🚀 Infrastructure deployment started via ArgoCD\n` +
+                        `📊 Application: \`${appName}\`\n` +
+                        `🔄 Sync Operation: \`${result.metadata?.name || 'N/A'}\`\n\n` +
+                        `**Monitor Progress**: [ArgoCD Dashboard](https://argocd.your-domain.com/applications/${appName})\n\n` +
+                        `ArgoCD will:\n` +
+                        `- 🔍 Continuously monitor for drift\n` +
+                        `- 🔄 Auto-heal any configuration drift\n` +
+                        `- 📊 Provide real-time deployment status\n` +
+                        `- 🔙 Enable easy rollbacks if needed`
+                });
+                
+              } else {
+                throw new Error(`ArgoCD API error: ${response.status} ${response.statusText}`);
               }
-            });
-            
-            console.log('✅ Apply workflow triggered');
+              
+            } catch (error) {
+              console.error('❌ Failed to trigger ArgoCD sync:', error);
+              
+              // Fallback to GitHub comment
+              await github.rest.issues.createComment({
+                owner: '${{ github.event.client_payload.source_owner }}',
+                repo: '${{ github.event.client_payload.source_repo }}',
+                issue_number: ${{ github.event.client_payload.pr_number }},
+                body: `⚠️ **ArgoCD Sync Failed**\n\nCould not trigger ArgoCD deployment automatically.\n\n` +
+                      `**Manual Action Required**:\n` +
+                      `1. Go to [ArgoCD Dashboard](https://argocd.your-domain.com)\n` +
+                      `2. Navigate to \`${appName}\` application\n` +
+                      `3. Click "Sync" to deploy the merged changes\n\n` +
+                      `Error: ${error.message}`
+              });
+              
+              core.setFailed(`ArgoCD sync failed: ${error.message}`);
+            }
 
       # ===== UPLOAD ARTIFACTS =====
       - name: 📦 Upload Artifacts
