@@ -357,7 +357,27 @@ jobs:
             # Optimized Checkov command (pre-pulled image)
             echo "🏃‍♂️ Running Checkov (optimized)..."
             
-            CHECKOV_CMD="timeout 300 docker run --rm -v $PWD:/tf -v $PWD/../controller:/controller bridgecrew/checkov:latest \
+            # Option 1: Set up GitHub authentication for module download
+            GITHUB_TOKEN="${{ steps.app-token.outputs.token }}"
+            
+            # Option 2: Pre-clone modules as backup (if auth fails)
+            echo "📦 Pre-cloning tf-modules for Checkov..."
+            cd ../controller
+            mkdir -p .external_modules/github.com/Terraform-centilazed-pipline/tf-module/HEAD
+            if ! git clone https://x-access-token:$GITHUB_TOKEN@github.com/Terraform-centilazed-pipline/tf-module.git .external_modules/github.com/Terraform-centilazed-pipline/tf-module/HEAD 2>/dev/null; then
+              echo "⚠️ Failed to pre-clone modules - Checkov will attempt download with auth"
+            else
+              echo "✅ Modules pre-cloned successfully"
+            fi
+            cd ../source-repo
+            
+            CHECKOV_CMD="timeout 300 docker run --rm \
+              -v $PWD:/tf \
+              -v $PWD/../controller:/controller \
+              -e GITHUB_TOKEN=$GITHUB_TOKEN \
+              -e GIT_USERNAME=x-access-token \
+              -e GIT_PASSWORD=$GITHUB_TOKEN \
+              bridgecrew/checkov:latest \
               --framework terraform \
               --check $ALL_CHECKS \
               --output json \
@@ -375,7 +395,31 @@ jobs:
             fi
             
             echo "🏃 Executing scan..."
-            eval "$CHECKOV_CMD" || true
+            if ! eval "$CHECKOV_CMD"; then
+              echo "⚠️ Checkov with external modules failed, trying without external modules..."
+              
+              # Fallback: Run without external modules
+              CHECKOV_FALLBACK="timeout 300 docker run --rm \
+                -v $PWD:/tf \
+                -v $PWD/../controller:/controller \
+                bridgecrew/checkov:latest \
+                --framework terraform \
+                --check $ALL_CHECKS \
+                --output json \
+                --output-file-path /tf/checkov-results/ \
+                --quiet \
+                --soft-fail \
+                --var-file /controller/terraform.tfvars \
+                --compact \
+                -d /controller"
+              
+              if [ -n "$SKIP_CHECKS" ]; then
+                CHECKOV_FALLBACK="$CHECKOV_FALLBACK --skip-check $SKIP_CHECKS"
+              fi
+              
+              echo "🔄 Running fallback scan (without external modules)..."
+              eval "$CHECKOV_FALLBACK" || true
+            fi
             
             # Fast results processing
             if [ -f "checkov-results/results_json.json" ]; then
@@ -480,56 +524,8 @@ jobs:
           
           echo "🛡️ Checkov security scan completed"
 
-      # ===== STEP 2B: TERRAFORM FORMAT CHECK =====
-      - name: 📝 Terraform Format Check
-        if: steps.discover.outputs.has_deployments == 'true'
-        id: fmt
-        working-directory: controller
-        run: |
-          echo "📝 Running terraform fmt check..."
-          
-          # Initialize variables
-          fmt_issues=0
-          fmt_files=""
-          
-          # Check format (dry run first)
-          echo "🔍 Checking Terraform format..."
-          if ! terraform fmt -check -recursive -diff; then
-            echo "⚠️ Format issues found - fixing automatically..."
-            
-            # Get list of files that need formatting
-            fmt_files=$(terraform fmt -write=false -list=true -recursive | tr '\n' ' ')
-            fmt_issues=$(terraform fmt -write=false -list=true -recursive | wc -l)
-            
-            # Auto-fix formatting
-            terraform fmt -recursive
-            
-            echo "✅ Format fixes applied to $fmt_issues files"
-            echo "📁 Files formatted: $fmt_files"
-            
-            # Save formatting details for PR comment
-            {
-              echo "=== TERRAFORM FORMAT FIXES ==="
-              echo "Files automatically formatted: $fmt_issues"
-              echo "Files: $fmt_files"
-              echo ""
-              echo "Changes applied:"
-              terraform fmt -check -recursive -diff 2>&1 || true
-            } > ../source-repo/terraform-fmt-result.txt
-          else
-            echo "✅ All Terraform files are properly formatted"
-            echo "=== TERRAFORM FORMAT CHECK ===" > ../source-repo/terraform-fmt-result.txt
-            echo "✅ All files properly formatted" >> ../source-repo/terraform-fmt-result.txt
-          fi
-          
-          # Set outputs
-          echo "fmt_issues=$fmt_issues" >> $GITHUB_OUTPUT
-          echo "fmt_files=$fmt_files" >> $GITHUB_OUTPUT
-          
-          echo "📝 Terraform format check completed"
-
-      # ===== STEP 3: TERRAFORM PLAN WITH STATE INFO =====
-      - name: 📋 Terraform Plan with State Analysis
+      # ===== STEP 3: TERRAFORM PLAN WITH FORMAT CHECK =====
+      - name: � Terraform Plan with Format Check
         if: steps.discover.outputs.has_deployments == 'true'
         id: plan
         working-directory: source-repo
@@ -538,6 +534,47 @@ jobs:
         run: |
           echo "📋 Running terraform plan for multiple deployments..."
           echo "🔧 Terraform directory: $TERRAFORM_DIR"
+          
+          # ===== TERRAFORM FORMAT CHECK FOR TFVARS ONLY =====
+          echo "📝 Checking tfvars format before planning..."
+          
+          # Initialize format tracking
+          fmt_issues=0
+          fmt_files=""
+          
+          # Only format .tfvars files (not the controller templates)
+          echo "🔍 Formatting tfvars files only..."
+          if [ -f "deployments.json" ]; then
+            DEPLOYMENT_FILES=$(jq -r '.deployments[].tfvars_file' deployments.json | tr '\n' ' ')
+            echo "📄 Found tfvars files: $DEPLOYMENT_FILES"
+            
+            for tfvars_file in $DEPLOYMENT_FILES; do
+              if [ -f "$tfvars_file" ]; then
+                echo "📝 Checking format: $tfvars_file"
+                
+                # Check if file needs formatting
+                if ! terraform fmt -check "$tfvars_file" >/dev/null 2>&1; then
+                  echo "⚠️ Formatting: $tfvars_file"
+                  terraform fmt "$tfvars_file"
+                  fmt_issues=$((fmt_issues + 1))
+                  fmt_files="$fmt_files $tfvars_file"
+                fi
+              fi
+            done
+            
+            # Save formatting results
+            if [ "$fmt_issues" -gt 0 ]; then
+              {
+                echo "=== TFVARS FORMAT FIXES ==="
+                echo "Files automatically formatted: $fmt_issues"
+                echo "Files: $fmt_files"
+                echo "Note: Only .tfvars files were formatted, controller templates unchanged"
+              } > terraform-fmt-result.txt
+            else
+              echo "=== TFVARS FORMAT CHECK ===" > terraform-fmt-result.txt
+              echo "✅ All .tfvars files properly formatted" >> terraform-fmt-result.txt
+            fi
+          fi
           
           # Initialize working directory and terraform
           cd $TERRAFORM_DIR
@@ -580,6 +617,10 @@ jobs:
             echo "successful_plans=$successful" >> $GITHUB_OUTPUT
             echo "failed_plans=$failed" >> $GITHUB_OUTPUT
             echo "has_changes=$has_changes" >> $GITHUB_OUTPUT
+            
+            # Add format outputs to plan step
+            echo "fmt_issues=$fmt_issues" >> $GITHUB_OUTPUT
+            echo "fmt_files=$fmt_files" >> $GITHUB_OUTPUT
             
             # Select first plan for OPA validation
             if [ -d "terraform-json" ] && [ "$successful" -gt 0 ]; then
@@ -894,8 +935,8 @@ jobs:
             }
             
             // Terraform Format Results
-            const fmtIssues = '${{ steps.fmt.outputs.fmt_issues }}';
-            const fmtFiles = '${{ steps.fmt.outputs.fmt_files }}';
+            const fmtIssues = '${{ steps.plan.outputs.fmt_issues }}';
+            const fmtFiles = '${{ steps.plan.outputs.fmt_files }}';
             
             comment += `### 📝 Terraform Format Check\n`;
             if (fmtIssues && fmtIssues !== '0') {
