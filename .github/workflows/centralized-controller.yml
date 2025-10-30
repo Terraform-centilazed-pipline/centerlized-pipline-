@@ -365,6 +365,7 @@ jobs:
               --quiet \
               --soft-fail \
               --var-file /controller/terraform.tfvars \
+              --download-external-modules true \
               --compact \
               -d /controller"
             
@@ -433,6 +434,20 @@ jobs:
               } > checkov-summary.txt
               
               cat checkov-summary.txt
+              
+              # Save critical and high severity details for PR comment
+              {
+                if [ "$critical_issues" -gt 0 ]; then
+                  echo "=== CRITICAL SECURITY ISSUES ==="
+                  jq --arg checks "$CRITICAL_CHECKS" -r '.results.failed_checks[]? | select(.check_id | test($checks | split(",") | join("|"))) | "🔴 " + .check_name + " (" + .check_id + ")\n   File: " + .file_path + "\n   Description: " + .description + "\n"' checkov-results/results_json.json 2>/dev/null || echo "No critical issues details available"
+                  echo ""
+                fi
+                
+                if [ "$high_issues" -gt 0 ]; then
+                  echo "=== HIGH SEVERITY ISSUES ==="
+                  jq --arg checks "$HIGH_CHECKS" -r '.results.failed_checks[]? | select(.check_id | test($checks | split(",") | join("|"))) | "🟠 " + .check_name + " (" + .check_id + ")\n   File: " + .file_path + "\n   Description: " + .description + "\n"' checkov-results/results_json.json 2>/dev/null || echo "No high issues details available"
+                fi
+              } > checkov-critical-high.txt
             else
               echo "⚠️ No Checkov results - controller templates may not exist or scan failed"
             fi
@@ -465,8 +480,56 @@ jobs:
           
           echo "🛡️ Checkov security scan completed"
 
-      # ===== STEP 3: TERRAFORM PLAN (Only runs if pre-validation passed) =====
-      - name: 📋 Terraform Plan
+      # ===== STEP 2B: TERRAFORM FORMAT CHECK =====
+      - name: 📝 Terraform Format Check
+        if: steps.discover.outputs.has_deployments == 'true'
+        id: fmt
+        working-directory: controller
+        run: |
+          echo "📝 Running terraform fmt check..."
+          
+          # Initialize variables
+          fmt_issues=0
+          fmt_files=""
+          
+          # Check format (dry run first)
+          echo "🔍 Checking Terraform format..."
+          if ! terraform fmt -check -recursive -diff; then
+            echo "⚠️ Format issues found - fixing automatically..."
+            
+            # Get list of files that need formatting
+            fmt_files=$(terraform fmt -write=false -list=true -recursive | tr '\n' ' ')
+            fmt_issues=$(terraform fmt -write=false -list=true -recursive | wc -l)
+            
+            # Auto-fix formatting
+            terraform fmt -recursive
+            
+            echo "✅ Format fixes applied to $fmt_issues files"
+            echo "📁 Files formatted: $fmt_files"
+            
+            # Save formatting details for PR comment
+            {
+              echo "=== TERRAFORM FORMAT FIXES ==="
+              echo "Files automatically formatted: $fmt_issues"
+              echo "Files: $fmt_files"
+              echo ""
+              echo "Changes applied:"
+              terraform fmt -check -recursive -diff 2>&1 || true
+            } > ../source-repo/terraform-fmt-result.txt
+          else
+            echo "✅ All Terraform files are properly formatted"
+            echo "=== TERRAFORM FORMAT CHECK ===" > ../source-repo/terraform-fmt-result.txt
+            echo "✅ All files properly formatted" >> ../source-repo/terraform-fmt-result.txt
+          fi
+          
+          # Set outputs
+          echo "fmt_issues=$fmt_issues" >> $GITHUB_OUTPUT
+          echo "fmt_files=$fmt_files" >> $GITHUB_OUTPUT
+          
+          echo "📝 Terraform format check completed"
+
+      # ===== STEP 3: TERRAFORM PLAN WITH STATE INFO =====
+      - name: 📋 Terraform Plan with State Analysis
         if: steps.discover.outputs.has_deployments == 'true'
         id: plan
         working-directory: source-repo
@@ -475,6 +538,22 @@ jobs:
         run: |
           echo "📋 Running terraform plan for multiple deployments..."
           echo "🔧 Terraform directory: $TERRAFORM_DIR"
+          
+          # Initialize working directory and terraform
+          cd $TERRAFORM_DIR
+          echo "🔧 Initializing Terraform..."
+          terraform init -input=false -no-color
+          
+          # Generate state list BEFORE planning
+          echo "📋 Generating current state information..."
+          {
+            echo "=== TERRAFORM STATE LIST (BEFORE PLAN) ==="
+            echo "Current resources in state:"
+            terraform state list 2>/dev/null || echo "No resources in state yet"
+            echo ""
+          } > ../source-repo/terraform-state-info.txt
+          
+          cd ../source-repo
           
           # Use the deployment orchestrator to run plans and create artifacts
           # This handles multiple deployments from different accounts properly
@@ -531,6 +610,53 @@ jobs:
             echo "❌ No plan-results.json found"
             exit 1
           fi
+
+      # ===== STEP 3B: POST-PLAN STATE & GRAPH ANALYSIS =====
+      - name: 📊 Generate State List & Terraform Graph
+        if: steps.plan.outputs.successful_plans > 0
+        id: state-graph
+        working-directory: controller
+        run: |
+          echo "📊 Generating post-plan state analysis and graph..."
+          
+          # Generate updated state list
+          {
+            echo ""
+            echo "=== TERRAFORM STATE LIST (AFTER PLAN) ==="
+            echo "Resources that will be in state after apply:"
+            terraform state list 2>/dev/null || echo "No resources in state yet"
+            
+            # Show state details for key resources
+            echo ""
+            echo "=== KEY RESOURCE DETAILS ==="
+            terraform state list 2>/dev/null | head -10 | while read resource; do
+              if [ -n "$resource" ]; then
+                echo "Resource: $resource"
+                terraform state show "$resource" 2>/dev/null | head -5 || echo "  Details not available"
+                echo ""
+              fi
+            done 2>/dev/null || echo "No detailed state information available"
+            
+          } >> ../source-repo/terraform-state-info.txt
+          
+          # Generate Terraform dependency graph
+          echo "🎯 Generating Terraform dependency graph..."
+          {
+            echo ""
+            echo "=== TERRAFORM DEPENDENCY GRAPH ==="
+            echo "Infrastructure dependency visualization:"
+            echo ""
+            terraform graph -type=plan 2>/dev/null || echo "Graph generation failed - likely no changes planned"
+          } > ../source-repo/terraform-graph.txt
+          
+          # Generate resource count summary
+          total_resources=$(terraform state list 2>/dev/null | wc -l || echo "0")
+          echo "📈 State summary: $total_resources total resources"
+          
+          # Set outputs for PR comment
+          echo "total_resources=$total_resources" >> $GITHUB_OUTPUT
+          
+          echo "📊 State and graph analysis completed"
 
       # ===== STEP 4: OPA VALIDATION =====
       - name: 🛡️ OPA Validation
@@ -649,20 +775,25 @@ jobs:
             cat opa-result.txt
           fi
 
-      # ===== STEP 4: POST PR COMMENT =====
-      - name: 💬 Post PR Comment
+      # ===== STEP 4: POST PR COMMENT WITH NOTIFICATIONS =====
+      - name: 💬 Post PR Comment with User Notification
         if: always() && steps.discover.outputs.has_deployments == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const fs = require('fs');
+            const prAuthor = '${{ github.event.client_payload.pr_author }}';
+            const sourceRepo = '${{ github.event.client_payload.source_repo }}';
+            const prNumber = '${{ github.event.client_payload.pr_number }}';
+            const prUrl = '${{ github.event.client_payload.pr_url }}';
+            const prBranch = '${{ github.event.client_payload.pr_head_ref }}';
             
             let comment = `## 🚀 Centralized Terraform Controller Results\n\n`;
-            comment += `**👤 PR Author**: @${{ github.event.client_payload.pr_author }}\n`;
-            comment += `**Source Repo**: \`${{ github.event.client_payload.source_repo }}\`\n`;
-            comment += `**PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
-            comment += `**Branch**: \`${{ github.event.client_payload.pr_head_ref }}\`\n\n`;
+            comment += `**👤 PR Author**: @${prAuthor}\n`;
+            comment += `**Source Repo**: \`${sourceRepo}\`\n`;
+            comment += `**PR**: [#${prNumber}](${prUrl})\n`;
+            comment += `**Branch**: \`${prBranch}\`\n\n`;
             
             // Checkov Security Scan Results
             const checkovStatus = '${{ steps.checkov.outputs.scan_status }}';
@@ -695,9 +826,11 @@ jobs:
                   console.log('No detailed checkov results file found');
                 }
                 
-                // Add warning for critical issues
+                // Add notification for critical/high issues
                 if (criticalIssues && parseInt(criticalIssues) > 0) {
-                  comment += `> ⚠️ **Warning @${{ github.event.client_payload.pr_author }}**: Critical security issues detected! Please review and fix before merging.\n\n`;
+                  comment += `> 🚨 **URGENT @${prAuthor}**: Critical security issues detected! Please review and fix before merging.\n\n`;
+                } else if (highIssues && parseInt(highIssues) > 2) {
+                  comment += `> ⚠️ **Warning @${prAuthor}**: Multiple high severity security issues detected. Please review.\n\n`;
                 }
               } else {
                 comment += `✅ No security issues detected by Checkov scan.\n\n`;
@@ -760,6 +893,54 @@ jobs:
               comment += `ℹ️ No deployments found or no changes detected\n\n`;
             }
             
+            // Terraform Format Results
+            const fmtIssues = '${{ steps.fmt.outputs.fmt_issues }}';
+            const fmtFiles = '${{ steps.fmt.outputs.fmt_files }}';
+            
+            comment += `### 📝 Terraform Format Check\n`;
+            if (fmtIssues && fmtIssues !== '0') {
+              comment += `⚠️ **Format Issues Fixed**: ${fmtIssues} files automatically formatted\n`;
+              comment += `📁 **Files**: ${fmtFiles}\n\n`;
+              
+              try {
+                const fmtDetails = fs.readFileSync('source-repo/terraform-fmt-result.txt', 'utf8');
+                comment += `<details>\n<summary>🔍 Format Changes (Click to expand)</summary>\n\n`;
+                comment += `\`\`\`diff\n${fmtDetails}\n\`\`\`\n\n</details>\n\n`;
+              } catch (e) {
+                console.log('No format details file found');
+              }
+            } else {
+              comment += `✅ All Terraform files are properly formatted\n\n`;
+            }
+            
+            // State List and Graph Information
+            const totalResources = '${{ steps.state-graph.outputs.total_resources }}';
+            
+            comment += `### 📊 Infrastructure State & Graph\n`;
+            comment += `📈 **Total Resources in State**: ${totalResources || '0'}\n\n`;
+            
+            // Add state information
+            try {
+              const stateInfo = fs.readFileSync('source-repo/terraform-state-info.txt', 'utf8');
+              if (stateInfo && stateInfo.trim()) {
+                comment += `<details>\n<summary>📋 State Resources (Click to expand)</summary>\n\n`;
+                comment += `\`\`\`\n${stateInfo}\n\`\`\`\n\n</details>\n\n`;
+              }
+            } catch (e) {
+              comment += `ℹ️ State information not available\n\n`;
+            }
+            
+            // Add terraform graph
+            try {
+              const graphInfo = fs.readFileSync('source-repo/terraform-graph.txt', 'utf8');
+              if (graphInfo && graphInfo.trim()) {
+                comment += `<details>\n<summary>🎯 Infrastructure Dependency Graph (Click to expand)</summary>\n\n`;
+                comment += `\`\`\`dot\n${graphInfo}\n\`\`\`\n\n</details>\n\n`;
+              }
+            } catch (e) {
+              comment += `ℹ️ Dependency graph not available\n\n`;
+            }
+            
             // OPA results
             const validation = '${{ steps.opa.outputs.validation_status }}';
             const violations = '${{ steps.opa.outputs.total_violations }}';
@@ -788,6 +969,35 @@ jobs:
               issue_number: ${{ github.event.client_payload.pr_number }},
               body: comment
             });
+
+      # ===== STEP 4B: IMMEDIATE NOTIFICATIONS FOR CRITICAL ISSUES =====
+      - name: 🚨 Send Critical Security Alert  
+        if: steps.checkov.outputs.scan_status == 'failed' && steps.checkov.outputs.critical_issues > 0
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            // Send a separate immediate notification for critical issues
+            const prAuthor = '${{ github.event.client_payload.pr_author }}';
+            const criticalCount = '${{ steps.checkov.outputs.critical_issues }}';
+            const sourceRepo = '${{ github.event.client_payload.source_repo }}';
+            const prNumber = '${{ github.event.client_payload.pr_number }}';
+            
+            const alertComment = `🚨 **URGENT SECURITY ALERT** 🚨\n\n` +
+              `@${prAuthor} - **${criticalCount} Critical Security Issues** detected in your Terraform changes!\n\n` +
+              `⛔ **Action Required**: Please fix these critical issues before proceeding.\n\n` +
+              `📋 See full details in the comment above.\n\n` +
+              `---\n` +
+              `🔒 *Automated Security Alert*`;
+            
+            await github.rest.issues.createComment({
+              owner: '${{ github.event.client_payload.source_owner }}',
+              repo: '${{ github.event.client_payload.source_repo }}',
+              issue_number: prNumber,
+              body: alertComment
+            });
+            
+            console.log(`Critical security alert sent to @${prAuthor} for ${criticalCount} critical issues`);
 
       # ===== STEP 5: AUTO-MERGE OR CLOSE PR =====
       - name: 🔀 Handle PR - Auto-merge if Security & OPA Passed
