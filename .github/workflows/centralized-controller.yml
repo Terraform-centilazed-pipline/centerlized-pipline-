@@ -330,11 +330,14 @@ jobs:
           high_issues=0
           medium_issues=0
           
-          # Only scan if we have .tfvars files (your architecture)
-          CHANGED_FILES="${{ github.event.client_payload.changed_files }}"
+          # Use files from the discover step (it already found tfvars files)
+          echo "📁 Scanning files discovered in previous step"
+          DEPLOYMENT_FILES=$(jq -r '.deployments[].tfvars_file' deployments.json | tr '\n' ' ')
+          echo "📁 Deployment files: $DEPLOYMENT_FILES"
           
-          if echo "$CHANGED_FILES" | grep -E '\.tfvars$' > /dev/null; then
-            echo "🔍 Found .tfvars files to scan"
+          if [ -n "$DEPLOYMENT_FILES" ]; then
+            echo "🔍 Found .tfvars deployments to scan"
+            echo "📄 Files: $DEPLOYMENT_FILES"
             
             # Fast YAML parsing (tools already installed)
             echo "📋 Loading security configuration..."
@@ -434,7 +437,9 @@ jobs:
               echo "⚠️ No Checkov results - controller templates may not exist or scan failed"
             fi
           else
-            echo "ℹ️ No .tfvars files in changed files - skipping security scan"
+            echo "ℹ️ No .tfvars deployments found - skipping security scan"
+            echo "📋 Available deployments.json contents:"
+            cat deployments.json 2>/dev/null || echo "No deployments.json file found"
           fi
           
           # Set outputs for downstream steps
