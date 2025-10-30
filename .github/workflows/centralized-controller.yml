@@ -357,16 +357,16 @@ jobs:
             # Optimized Checkov command (pre-pulled image)
             echo "🏃‍♂️ Running Checkov (optimized)..."
             
-            CHECKOV_CMD="timeout 300 docker run --rm -v $PWD:/tf bridgecrew/checkov:latest \
+            CHECKOV_CMD="timeout 300 docker run --rm -v $PWD:/tf -v $PWD/../controller:/controller bridgecrew/checkov:latest \
               --framework terraform \
               --check $ALL_CHECKS \
               --output json \
               --output-file-path /tf/checkov-results/ \
               --quiet \
               --soft-fail \
-              --var-file /tf/../controller/terraform.tfvars \
+              --var-file /controller/terraform.tfvars \
               --compact \
-              /tf/../controller"
+              -d /controller"
             
             # Add skip checks if any
             if [ -n "$SKIP_CHECKS" ]; then
