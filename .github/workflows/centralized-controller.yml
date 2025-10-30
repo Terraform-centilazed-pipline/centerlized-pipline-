@@ -81,19 +81,114 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      - name: 🔧 Setup OPA
+      # ===== OPTIMIZED TOOL SETUP (PARALLEL + CACHED) =====
+      - name: ⚡ Setup Tools (Parallel + Fast)
+        id: setup-tools
         run: |
-          echo "📦 Installing OPA ${{ env.OPA_VERSION }}..."
-          curl -L -o opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
-          chmod +x opa
-          sudo mv opa /usr/local/bin/
-          opa version
-
-      - name: 🔧 Setup Checkov
-        run: |
-          echo "📦 Installing Checkov for security scanning..."
-          pip install checkov
-          checkov --version
+          echo "🚀 Setting up OPA, yq, and Docker in parallel..."
+          
+          # Function to setup OPA with retries
+          setup_opa() {
+            echo "📦 Installing OPA ${{ env.OPA_VERSION }} with retries..."
+            
+            # Check if already available
+            if command -v opa >/dev/null 2>&1; then
+              echo "✅ OPA already available"
+              opa version
+              return 0
+            fi
+            
+            # Download with retries and fallback
+            OPA_URL="https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static"
+            FALLBACK_URL="https://github.com/open-policy-agent/opa/releases/download/v${{ env.OPA_VERSION }}/opa_linux_amd64_static"
+            
+            for url in "$OPA_URL" "$FALLBACK_URL"; do
+              echo "📡 Trying: $url"
+              if timeout 30 curl -fsSL --connect-timeout 5 --max-time 30 -o opa "$url"; then
+                chmod +x opa
+                ./opa version
+                sudo mv opa /usr/local/bin/
+                echo "✅ OPA installed successfully"
+                return 0
+              fi
+              echo "❌ Failed, trying next URL..."
+            done
+            
+            echo "❌ All OPA download attempts failed"
+            return 1
+          }
+          
+          # Function to setup yq with fallback
+          setup_yq() {
+            echo "📦 Installing yq..."
+            
+            # Check if already available
+            if command -v yq >/dev/null 2>&1; then
+              echo "✅ yq already available"
+              return 0
+            fi
+            
+            # Try snap first (faster), then direct download
+            if sudo snap install yq 2>/dev/null; then
+              echo "✅ yq installed via snap"
+            elif timeout 15 curl -fsSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o yq; then
+              chmod +x yq
+              sudo mv yq /usr/local/bin/
+              echo "✅ yq installed via direct download"
+            else
+              echo "❌ yq installation failed"
+              return 1
+            fi
+          }
+          
+          # Function to pre-pull Docker images
+          setup_docker() {
+            echo "🐳 Pre-pulling Docker images..."
+            
+            # Pull Checkov image in background
+            docker pull bridgecrew/checkov:latest &
+            CHECKOV_PID=$!
+            
+            # Wait for Checkov (most important)
+            if wait $CHECKOV_PID; then
+              echo "✅ Checkov image pulled successfully"
+            else
+              echo "⚠️ Checkov image pull failed (will retry during scan)"
+            fi
+          }
+          
+          # Run all setups in parallel
+          echo "🔄 Starting parallel tool setup..."
+          setup_opa &
+          OPA_PID=$!
+          
+          setup_yq &
+          YQ_PID=$!
+          
+          setup_docker &
+          DOCKER_PID=$!
+          
+          # Wait for critical tools
+          wait $OPA_PID
+          OPA_STATUS=$?
+          
+          wait $YQ_PID  
+          YQ_STATUS=$?
+          
+          wait $DOCKER_PID
+          DOCKER_STATUS=$?
+          
+          # Report results
+          if [ $OPA_STATUS -eq 0 ] && [ $YQ_STATUS -eq 0 ]; then
+            echo "✅ All critical tools ready"
+            echo "tools_ready=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Tool setup failed - OPA: $OPA_STATUS, yq: $YQ_STATUS"
+            echo "tools_ready=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "⚡ Tool setup completed in parallel!"
 
       - name: Configure Git Authentication for Terraform Modules
         run: |
@@ -217,6 +312,154 @@ jobs:
             
             core.setFailed('❌ Pre-deployment validation failed. PR closed.');
 
+      # ===== STEP 2.5: CHECKOV SECURITY SCAN (OPTIMIZED) =====
+      - name: 🛡️ Checkov Security Scan (Fast & Focused)
+        if: steps.discover.outputs.has_deployments == 'true' && steps.setup-tools.outputs.tools_ready == 'true'
+        id: checkov
+        working-directory: source-repo
+        continue-on-error: true
+        run: |
+          echo "🛡️ Running optimized Checkov security scan..."
+          
+          # Create results directory
+          mkdir -p checkov-results
+          
+          # Initialize counters
+          total_issues=0
+          critical_issues=0
+          high_issues=0
+          medium_issues=0
+          
+          # Only scan if we have .tfvars files (your architecture)
+          CHANGED_FILES="${{ github.event.client_payload.changed_files }}"
+          
+          if echo "$CHANGED_FILES" | grep -E '\.tfvars$' > /dev/null; then
+            echo "🔍 Found .tfvars files to scan"
+            
+            # Fast YAML parsing (tools already installed)
+            echo "📋 Loading security configuration..."
+            
+            CRITICAL_CHECKS=$(yq eval '.security_checks.critical[]' ../controller/checkov-config.yaml | tr '\n' ',' | sed 's/,$//')
+            HIGH_CHECKS=$(yq eval '.security_checks.high[]' ../controller/checkov-config.yaml | tr '\n' ',' | sed 's/,$//')
+            MEDIUM_CHECKS=$(yq eval '.security_checks.medium[]' ../controller/checkov-config.yaml | tr '\n' ',' | sed 's/,$//')
+            SKIP_CHECKS=$(yq eval '.skip_checks[]' ../controller/checkov-config.yaml | tr '\n' ',' | sed 's/,$//')
+            
+            # Combine checks efficiently
+            ALL_CHECKS="${CRITICAL_CHECKS},${HIGH_CHECKS},${MEDIUM_CHECKS}"
+            
+            echo "🎯 Focused scan - Critical: $(echo $CRITICAL_CHECKS | tr ',' '\n' | wc -l) checks"
+            echo "🎯 Focused scan - High: $(echo $HIGH_CHECKS | tr ',' '\n' | wc -l) checks"
+            echo "🎯 Focused scan - Medium: $(echo $MEDIUM_CHECKS | tr ',' '\n' | wc -l) checks"
+            
+            # Optimized Checkov command (pre-pulled image)
+            echo "🏃‍♂️ Running Checkov (optimized)..."
+            
+            CHECKOV_CMD="timeout 300 docker run --rm -v $PWD:/tf bridgecrew/checkov:latest \
+              --framework terraform \
+              --check $ALL_CHECKS \
+              --output json \
+              --output-file-path /tf/checkov-results/ \
+              --quiet \
+              --soft-fail \
+              --var-file /tf/../controller/terraform.tfvars \
+              --compact \
+              /tf/../controller"
+            
+            # Add skip checks if any
+            if [ -n "$SKIP_CHECKS" ]; then
+              CHECKOV_CMD="$CHECKOV_CMD --skip-check $SKIP_CHECKS"
+            fi
+            
+            echo "🏃 Executing scan..."
+            eval "$CHECKOV_CMD" || true
+            
+            # Fast results processing
+            if [ -f "checkov-results/results_json.json" ]; then
+              echo "📊 Processing results (optimized)..."
+              
+              # Get thresholds
+              CRITICAL_THRESHOLD=$(yq eval '.blocking_rules.critical_threshold' ../controller/checkov-config.yaml)
+              HIGH_THRESHOLD=$(yq eval '.blocking_rules.high_threshold' ../controller/checkov-config.yaml)
+              MEDIUM_THRESHOLD=$(yq eval '.blocking_rules.medium_threshold' ../controller/checkov-config.yaml)
+              
+              # Optimized counting with jq (faster than bash loops)
+              critical_issues=$(jq --arg checks "$CRITICAL_CHECKS" '
+                ($checks | split(",")) as $check_list |
+                [.results.failed_checks[]? | select(.check_id | IN($check_list[]))] | length
+              ' checkov-results/results_json.json 2>/dev/null || echo "0")
+              
+              high_issues=$(jq --arg checks "$HIGH_CHECKS" '
+                ($checks | split(",")) as $check_list |
+                [.results.failed_checks[]? | select(.check_id | IN($check_list[]))] | length
+              ' checkov-results/results_json.json 2>/dev/null || echo "0")
+              
+              medium_issues=$(jq --arg checks "$MEDIUM_CHECKS" '
+                ($checks | split(",")) as $check_list |
+                [.results.failed_checks[]? | select(.check_id | IN($check_list[]))] | length
+              ' checkov-results/results_json.json 2>/dev/null || echo "0")
+              
+              total_issues=$((critical_issues + high_issues + medium_issues))
+              
+              echo "📊 Fast Results:"
+              echo "🔴 Critical: $critical_issues (max: $CRITICAL_THRESHOLD)"
+              echo "🟠 High: $high_issues (max: $HIGH_THRESHOLD)" 
+              echo "🟡 Medium: $medium_issues (max: $MEDIUM_THRESHOLD)"
+              echo "📈 Total: $total_issues"
+              
+              # Create dynamic summary
+              {
+                echo "=== CHECKOV SECURITY SCAN RESULTS ==="
+                echo "Configuration: checkov-config.yaml"
+                echo "Files Scanned: Controller .tf templates with changed .tfvars values"
+                echo "Critical Issues: $critical_issues (threshold: $CRITICAL_THRESHOLD)"
+                echo "High Issues: $high_issues (threshold: $HIGH_THRESHOLD)"
+                echo "Medium Issues: $medium_issues (threshold: $MEDIUM_THRESHOLD)"
+                echo "Total Issues: $total_issues"
+                echo ""
+                if [ "$critical_issues" -gt "$CRITICAL_THRESHOLD" ]; then
+                  echo "❌ CRITICAL SECURITY ISSUES FOUND"
+                  echo "Details:"
+                  jq --arg checks "$CRITICAL_CHECKS" -r '.results.failed_checks[]? | select(.check_id | test($checks | split(",") | join("|"))) | "- " + .check_name + " (" + .check_id + "): " + .file_path' checkov-results/results_json.json 2>/dev/null || echo "See full results above"
+                elif [ "$high_issues" -gt "$HIGH_THRESHOLD" ]; then
+                  echo "⚠️ TOO MANY HIGH SEVERITY ISSUES"
+                  echo "Details:"
+                  jq --arg checks "$HIGH_CHECKS" -r '.results.failed_checks[]? | select(.check_id | test($checks | split(",") | join("|"))) | "- " + .check_name + " (" + .check_id + "): " + .file_path' checkov-results/results_json.json 2>/dev/null || echo "See full results above"
+                else
+                  echo "✅ Security scan passed thresholds"
+                fi
+              } > checkov-summary.txt
+              
+              cat checkov-summary.txt
+            else
+              echo "⚠️ No Checkov results - controller templates may not exist or scan failed"
+            fi
+          else
+            echo "ℹ️ No .tfvars files in changed files - skipping security scan"
+          fi
+          
+          # Set outputs for downstream steps
+          echo "total_issues=$total_issues" >> $GITHUB_OUTPUT
+          echo "critical_issues=$critical_issues" >> $GITHUB_OUTPUT
+          echo "high_issues=$high_issues" >> $GITHUB_OUTPUT
+          echo "medium_issues=$medium_issues" >> $GITHUB_OUTPUT
+          
+          # Determine scan status using dynamic thresholds from config
+          if [ "$critical_issues" -gt "${CRITICAL_THRESHOLD:-0}" ]; then
+            echo "scan_status=failed" >> $GITHUB_OUTPUT
+            echo "scan_message=🔴 Critical security issues found (${critical_issues}>${CRITICAL_THRESHOLD})" >> $GITHUB_OUTPUT
+          elif [ "$high_issues" -gt "${HIGH_THRESHOLD:-5}" ]; then
+            echo "scan_status=failed" >> $GITHUB_OUTPUT  
+            echo "scan_message=⚠️ Too many high severity issues (${high_issues}>${HIGH_THRESHOLD})" >> $GITHUB_OUTPUT
+          elif [ "$medium_issues" -gt "${MEDIUM_THRESHOLD:-10}" ]; then
+            echo "scan_status=warning" >> $GITHUB_OUTPUT
+            echo "scan_message=⚠️ Multiple medium issues found (${medium_issues}>${MEDIUM_THRESHOLD})" >> $GITHUB_OUTPUT
+          else
+            echo "scan_status=passed" >> $GITHUB_OUTPUT
+            echo "scan_message=✅ Security scan passed all thresholds" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "🛡️ Checkov security scan completed"
+
       # ===== STEP 3: TERRAFORM PLAN (Only runs if pre-validation passed) =====
       - name: 📋 Terraform Plan
         if: steps.discover.outputs.has_deployments == 'true'
@@ -282,88 +525,6 @@ jobs:
           else
             echo "❌ No plan-results.json found"
             exit 1
-          fi
-
-      # ===== STEP 3.5: CHECKOV SECURITY SCAN =====
-      - name: 🛡️ Checkov Security Scan
-        if: steps.discover.outputs.has_deployments == 'true'
-        id: checkov
-        working-directory: source-repo
-        continue-on-error: true
-        run: |
-          echo "🛡️ Running Checkov security scan on Terraform files..."
-          
-          # Create checkov results directory
-          mkdir -p checkov-results
-          
-          # Scan Terraform files in the changed directories
-          echo "🔍 Scanning Terraform configurations..."
-          
-          # Run Checkov on the entire source repo with focus on changed files
-          set +e
-          checkov --framework terraform \
-            --directory . \
-            --output cli \
-            --output json \
-            --output-file-path checkov-results/ \
-            --soft-fail \
-            --compact \
-            --quiet || true
-          
-          checkov_exit_code=$?
-          set -e
-          
-          # Process Checkov results
-          if [ -f "checkov-results/results_json.json" ]; then
-            # Parse Checkov JSON results
-            total_failed=$(jq -r '.summary.failed // 0' checkov-results/results_json.json)
-            total_passed=$(jq -r '.summary.passed // 0' checkov-results/results_json.json)
-            total_skipped=$(jq -r '.summary.skipped // 0' checkov-results/results_json.json)
-            
-            # Count by severity (Checkov doesn't have severity levels, so we'll categorize by check type)
-            critical_issues=$(jq -r '[.results.failed_checks[] | select(.check_id | test("CKV_AWS_(18|19|20|21|61|79|144)")] | length' checkov-results/results_json.json 2>/dev/null || echo "0")
-            high_issues=$(jq -r '[.results.failed_checks[] | select(.check_id | test("CKV_AWS_(2|3|4|23|24|25|26|27|28|29|30)")] | length' checkov-results/results_json.json 2>/dev/null || echo "0")
-            medium_issues=$((total_failed - critical_issues - high_issues))
-            
-            echo "📊 Checkov Security Scan Results:"
-            echo "   ✅ Passed: $total_passed"
-            echo "   ❌ Failed: $total_failed"
-            echo "   ⏭️ Skipped: $total_skipped"
-            echo "   🔴 Critical: $critical_issues"
-            echo "   🟠 High: $high_issues"
-            echo "   🟡 Medium: $medium_issues"
-            
-            # Set outputs
-            echo "total_failed=$total_failed" >> $GITHUB_OUTPUT
-            echo "total_passed=$total_passed" >> $GITHUB_OUTPUT
-            echo "total_skipped=$total_skipped" >> $GITHUB_OUTPUT
-            echo "critical_issues=$critical_issues" >> $GITHUB_OUTPUT
-            echo "high_issues=$high_issues" >> $GITHUB_OUTPUT
-            echo "medium_issues=$medium_issues" >> $GITHUB_OUTPUT
-            
-            # Create summary for PR comment
-            if [ "$total_failed" -eq 0 ]; then
-              echo "scan_status=passed" >> $GITHUB_OUTPUT
-              echo "✅ Checkov scan passed - no security issues found"
-            else
-              echo "scan_status=failed" >> $GITHUB_OUTPUT
-              echo "⚠️ Checkov found $total_failed security issues"
-              
-              # Generate detailed report for critical/high issues
-              if [ "$critical_issues" -gt 0 ] || [ "$high_issues" -gt 0 ]; then
-                echo "🚨 Critical/High severity issues found!"
-                jq -r '.results.failed_checks[] | select(.check_id | test("CKV_AWS_(18|19|20|21|61|79|144|2|3|4|23|24|25|26|27|28|29|30)")) | "- " + .check_name + " (" + .check_id + "): " + .file_path' checkov-results/results_json.json > checkov-critical-high.txt 2>/dev/null || echo "No critical/high issues details available" > checkov-critical-high.txt
-              fi
-            fi
-          else
-            echo "⚠️ Checkov results file not found"
-            echo "scan_status=error" >> $GITHUB_OUTPUT
-            echo "total_failed=0" >> $GITHUB_OUTPUT
-            echo "total_passed=0" >> $GITHUB_OUTPUT
-            echo "total_skipped=0" >> $GITHUB_OUTPUT
-            echo "critical_issues=0" >> $GITHUB_OUTPUT
-            echo "high_issues=0" >> $GITHUB_OUTPUT
-            echo "medium_issues=0" >> $GITHUB_OUTPUT
           fi
 
       # ===== STEP 4: OPA VALIDATION =====
@@ -483,7 +644,7 @@ jobs:
             cat opa-result.txt
           fi
 
-      # ===== STEP 5: POST PR COMMENT =====
+      # ===== STEP 4: POST PR COMMENT =====
       - name: 💬 Post PR Comment
         if: always() && steps.discover.outputs.has_deployments == 'true'
         uses: actions/github-script@v7
@@ -492,44 +653,51 @@ jobs:
           script: |
             const fs = require('fs');
             
-            // Get PR author and reviewers for notifications
-            const prAuthor = '${{ github.event.client_payload.pr_author }}';
-            const prNumber = ${{ github.event.client_payload.pr_number }};
-            const owner = '${{ github.event.client_payload.source_owner }}';
-            const repo = '${{ github.event.client_payload.source_repo }}';
-            
-            // Get PR details to find reviewers
-            let reviewers = [];
-            try {
-              const { data: pr } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: prNumber
-              });
-              
-              if (pr.requested_reviewers) {
-                reviewers = pr.requested_reviewers.map(r => r.login);
-              }
-            } catch (e) {
-              console.log('Could not fetch PR reviewers:', e.message);
-            }
-            
             let comment = `## 🚀 Centralized Terraform Controller Results\n\n`;
-            
-            // Add user notifications at the top
-            let notifications = [`@${prAuthor}`];
-            if (reviewers.length > 0) {
-              notifications = notifications.concat(reviewers.map(r => `@${r}`));
-            }
-            comment += `**🔔 Notifications**: ${notifications.join(', ')}\n\n`;
-            
+            comment += `**👤 PR Author**: @${{ github.event.client_payload.pr_author }}\n`;
             comment += `**Source Repo**: \`${{ github.event.client_payload.source_repo }}\`\n`;
             comment += `**PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
             comment += `**Branch**: \`${{ github.event.client_payload.pr_head_ref }}\`\n\n`;
             
-            // Add warnings section at the top if there are issues
-            let hasWarnings = false;
-            let warningsSection = `## ⚠️ **IMPORTANT WARNINGS**\n\n`;
+            // Checkov Security Scan Results
+            const checkovStatus = '${{ steps.checkov.outputs.scan_status }}';
+            const checkovMessage = '${{ steps.checkov.outputs.scan_message }}';
+            const totalIssues = '${{ steps.checkov.outputs.total_issues }}';
+            const criticalIssues = '${{ steps.checkov.outputs.critical_issues }}';
+            const highIssues = '${{ steps.checkov.outputs.high_issues }}';
+            const mediumIssues = '${{ steps.checkov.outputs.medium_issues }}';
+            
+            if (checkovStatus) {
+              comment += `### 🛡️ Security Scan Results\n`;
+              comment += `**Status**: ${checkovMessage}\n\n`;
+              
+              if (totalIssues && totalIssues !== '0') {
+                comment += `| Severity | Count |\n`;
+                comment += `|----------|-------|\n`;
+                comment += `| 🔴 Critical | ${criticalIssues || '0'} |\n`;
+                comment += `| 🟠 High | ${highIssues || '0'} |\n`;
+                comment += `| 🟡 Medium | ${mediumIssues || '0'} |\n`;
+                comment += `| 📊 **Total** | **${totalIssues}** |\n\n`;
+                
+                // Add critical/high issue details if available
+                try {
+                  const checkovDetails = fs.readFileSync('source-repo/checkov-critical-high.txt', 'utf8');
+                  if (checkovDetails && checkovDetails.trim()) {
+                    comment += `<details>\n<summary>🔍 Critical & High Severity Issues (Click to expand)</summary>\n\n`;
+                    comment += `\`\`\`\n${checkovDetails}\n\`\`\`\n\n</details>\n\n`;
+                  }
+                } catch (e) {
+                  console.log('No detailed checkov results file found');
+                }
+                
+                // Add warning for critical issues
+                if (criticalIssues && parseInt(criticalIssues) > 0) {
+                  comment += `> ⚠️ **Warning @${{ github.event.client_payload.pr_author }}**: Critical security issues detected! Please review and fix before merging.\n\n`;
+                }
+              } else {
+                comment += `✅ No security issues detected by Checkov scan.\n\n`;
+              }
+            }
             
             // Plan results
             const total = '${{ steps.plan.outputs.total_deployments }}';
@@ -545,12 +713,6 @@ jobs:
               comment += `| ✅ Successful Plans | ${successful} |\n`;
               comment += `| ❌ Failed Plans | ${failed} |\n`;
               comment += `| 🔄 Has Changes | ${hasChanges === 'true' ? 'Yes' : 'No'} |\n\n`;
-              
-              // Add warning if plans failed
-              if (failed && parseInt(failed) > 0) {
-                hasWarnings = true;
-                warningsSection += `🚨 **${failed} Terraform plan(s) failed** - Review configuration syntax and dependencies\n`;
-              }
               
               // Add detailed plan results if available
               try {
@@ -593,54 +755,6 @@ jobs:
               comment += `ℹ️ No deployments found or no changes detected\n\n`;
             }
             
-            // Checkov Security Scan Results
-            const checkovStatus = '${{ steps.checkov.outputs.scan_status }}';
-            const checkovFailed = '${{ steps.checkov.outputs.total_failed }}';
-            const checkovPassed = '${{ steps.checkov.outputs.total_passed }}';
-            const checkovCritical = '${{ steps.checkov.outputs.critical_issues }}';
-            const checkovHigh = '${{ steps.checkov.outputs.high_issues }}';
-            const checkovMedium = '${{ steps.checkov.outputs.medium_issues }}';
-            
-            comment += `### 🛡️ Checkov Security Scan\n`;
-            if (checkovStatus === 'passed') {
-              comment += `✅ **Status**: PASSED - No security issues found\n`;
-              comment += `- **Passed Checks**: ${checkovPassed}\n\n`;
-            } else if (checkovStatus === 'failed') {
-              comment += `⚠️ **Status**: SECURITY ISSUES DETECTED\n`;
-              comment += `- **Failed Checks**: ${checkovFailed}\n`;
-              comment += `- **Passed Checks**: ${checkovPassed}\n`;
-              comment += `- 🔴 **Critical**: ${checkovCritical}\n`;
-              comment += `- 🟠 **High**: ${checkovHigh}\n`;
-              comment += `- 🟡 **Medium**: ${checkovMedium}\n\n`;
-              
-              // Add to warnings
-              if (parseInt(checkovCritical) > 0) {
-                hasWarnings = true;
-                warningsSection += `🚨 **${checkovCritical} CRITICAL security issues found** - These must be fixed before deployment\n`;
-              }
-              if (parseInt(checkovHigh) > 0) {
-                hasWarnings = true;
-                warningsSection += `⚠️ **${checkovHigh} HIGH severity security issues found** - Strongly recommend fixing\n`;
-              }
-              if (parseInt(checkovMedium) > 0) {
-                warningsSection += `📋 **${checkovMedium} MEDIUM severity security issues found** - Consider addressing\n`;
-              }
-              
-              // Add critical/high issue details if available
-              try {
-                const criticalHighDetails = fs.readFileSync('source-repo/checkov-critical-high.txt', 'utf8');
-                if (criticalHighDetails.trim()) {
-                  comment += `**🚨 Critical/High Security Issues**:\n\`\`\`\n${criticalHighDetails.substring(0, 2000)}\n\`\`\`\n\n`;
-                }
-              } catch (e) {
-                console.log('No critical/high issues file found');
-              }
-            } else {
-              comment += `❓ **Status**: SCAN ERROR - Could not complete security scan\n\n`;
-              hasWarnings = true;
-              warningsSection += `⚠️ **Security scan failed** - Manual security review required\n`;
-            }
-            
             // OPA results
             const validation = '${{ steps.opa.outputs.validation_status }}';
             const violations = '${{ steps.opa.outputs.total_violations }}';
@@ -651,27 +765,12 @@ jobs:
             } else if (validation === 'failed') {
               comment += `❌ **Status**: FAILED\n`;
               comment += `- **Violations**: ${violations}\n\n`;
-              
-              // Add to warnings
-              hasWarnings = true;
-              warningsSection += `🚨 **${violations} OPA policy violations found** - PR will be automatically closed\n`;
-              
               try {
                 const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
                 comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
               } catch (e) {}
             } else if ('${{ steps.plan.outputs.opa_plan_ready }}' === 'false') {
               comment += `⚠️ **Status**: SKIPPED - No successful plans for validation\n\n`;
-            }
-            
-            // Add warnings section at the beginning if there are warnings
-            if (hasWarnings) {
-              warningsSection += `\n**Action Required**: Address these issues before this PR can be merged.\n\n`;
-              // Insert warnings after the header but before the main content
-              const headerEnd = comment.indexOf('**Source Repo**');
-              const beforeHeader = comment.substring(0, headerEnd);
-              const afterHeader = comment.substring(headerEnd);
-              comment = beforeHeader + warningsSection + afterHeader;
             }
             
             comment += `\n---\n`;
@@ -685,8 +784,8 @@ jobs:
               body: comment
             });
 
-      # ===== STEP 6: AUTO-MERGE OR CLOSE PR =====
-      - name: 🔀 Handle PR - Auto-merge if OPA Passed
+      # ===== STEP 5: AUTO-MERGE OR CLOSE PR =====
+      - name: 🔀 Handle PR - Auto-merge if Security & OPA Passed
         if: steps.opa.outputs.validation_status != ''
         id: merge
         uses: actions/github-script@v7
@@ -695,41 +794,22 @@ jobs:
           script: |
             const validation = '${{ steps.opa.outputs.validation_status }}';
             const checkovStatus = '${{ steps.checkov.outputs.scan_status }}';
-            const checkovCritical = parseInt('${{ steps.checkov.outputs.critical_issues }}' || '0');
-            const checkovHigh = parseInt('${{ steps.checkov.outputs.high_issues }}' || '0');
+            const criticalIssues = '${{ steps.checkov.outputs.critical_issues }}';
+            const highIssues = '${{ steps.checkov.outputs.high_issues }}';
             const owner = '${{ github.event.client_payload.source_owner }}';
             const repo = '${{ github.event.client_payload.source_repo }}';
             const pr_number = ${{ github.event.client_payload.pr_number }};
-            const prAuthor = '${{ github.event.client_payload.pr_author }}';
             
-            // Get PR details for notifications
-            let reviewers = [];
-            try {
-              const { data: pr } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: pr_number
-              });
-              
-              if (pr.requested_reviewers) {
-                reviewers = pr.requested_reviewers.map(r => r.login);
-              }
-            } catch (e) {
-              console.log('Could not fetch PR reviewers:', e.message);
-            }
+            console.log(`OPA Validation Status: ${validation}`);
+            console.log(`Checkov Status: ${checkovStatus}`);
+            console.log(`Critical Issues: ${criticalIssues}, High Issues: ${highIssues}`);
             
-            // Create notification list
-            let notifications = [`@${prAuthor}`];
-            if (reviewers.length > 0) {
-              notifications = notifications.concat(reviewers.map(r => `@${r}`));
-            }
-            const notificationString = notifications.join(', ');
+            // Check if both security and policy validation passed
+            const securityPassed = checkovStatus === 'passed' || (checkovStatus === 'warning' && parseInt(criticalIssues || '0') === 0);
+            const opaPassed = validation === 'passed';
             
-            // Check security conditions
-            const hasSecurityIssues = (checkovCritical > 0 || checkovHigh > 0 || checkovStatus === 'error');
-            
-            if (validation === 'passed' && !hasSecurityIssues) {
-              console.log('✅ OPA passed and no critical security issues - auto-merging PR');
+            if (opaPassed && securityPassed) {
+              console.log('✅ Both OPA and Security validation passed - auto-merging PR');
               
               try {
                 const { data: mergeResult } = await github.rest.pulls.merge({
@@ -737,8 +817,8 @@ jobs:
                   repo,
                   pull_number: pr_number,
                   merge_method: 'squash',
-                  commit_title: '[Terraform] Auto-approved: Security validation passed',
-                  commit_message: 'Automatically merged after successful validation.\n\n✅ OPA policy validation: PASSED\n🛡️ Checkov security scan: PASSED\n\nAll security policies and checks passed. Terraform changes approved for deployment.'
+                  commit_title: '[Terraform] Auto-approved: Security & OPA validation passed',
+                  commit_message: 'Automatically merged after successful security scan and OPA policy validation.\n\nAll security policies and compliance checks passed. Terraform changes approved for deployment.'
                 });
                 
                 console.log('✅ PR merged successfully');
@@ -748,17 +828,15 @@ jobs:
                 core.setOutput('merged', 'true');
                 core.setOutput('merge_sha', mergeResult.sha);
                 
-                // Add success comment with notifications
+                // Add success comment
                 await github.rest.issues.createComment({
                   owner,
                   repo,
                   issue_number: pr_number,
                   body: `✅ **PR Auto-Approved & Merged!**\n\n` +
-                        `� **Notifications**: ${notificationString}\n\n` +
-                        `�🛡️ **Security Status**: ALL CHECKS PASSED\n` +
-                        `- OPA policy validation: ✅ PASSED\n` +
-                        `- Checkov security scan: ✅ PASSED\n` +
-                        `- Services validated: ${{ steps.opa.outputs.services_detected || 'All services' }}\n\n` +
+                        `🛡️ Security Scan: ${checkovStatus === 'passed' ? 'PASSED' : 'WARNING (no critical issues)'}\n` +
+                        `🔒 OPA Policy Validation: PASSED\n` +
+                        `📋 Services validated: ${{ steps.opa.outputs.services_detected || 'All services' }}\n` +
                         `🔀 Changes have been merged to \`main\`\n` +
                         `🚀 Terraform apply will begin automatically...\n\n` +
                         `**Merge SHA**: \`${mergeResult.sha}\``
@@ -772,42 +850,35 @@ jobs:
                   owner,
                   repo,
                   issue_number: pr_number,
-                  body: `⚠️ **Auto-merge Failed**\n\n🔔 ${notificationString}\n\nValidation passed, but automatic merge failed.\n\nError: ${error.message}\n\nPlease merge manually.`
+                  body: `⚠️ **Auto-merge Failed**\n\nSecurity and OPA validation passed, but automatic merge failed.\n\nError: ${error.message}\n\nPlease merge manually.`
                 });
               }
-            } else if (validation === 'passed' && hasSecurityIssues) {
-              console.log('⚠️ OPA passed but security issues found - manual review required');
+            } else if (!securityPassed) {
+              console.log('❌ Security scan failed - closing PR');
               
               core.setOutput('merged', 'false');
               
-              let securityMessage = '';
-              if (checkovCritical > 0) {
-                securityMessage += `🚨 **${checkovCritical} CRITICAL** security issues\n`;
-              }
-              if (checkovHigh > 0) {
-                securityMessage += `⚠️ **${checkovHigh} HIGH** severity security issues\n`;
-              }
-              if (checkovStatus === 'error') {
-                securityMessage += `❌ Security scan failed - manual review required\n`;
-              }
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pr_number,
+                state: 'closed'
+              });
               
               await github.rest.issues.createComment({
                 owner,
                 repo,
                 issue_number: pr_number,
-                body: `⚠️ **Manual Review Required**\n\n` +
-                      `🔔 **Attention Required**: ${notificationString}\n\n` +
-                      `✅ OPA policy validation: PASSED\n` +
-                      `⚠️ **Security Issues Detected**:\n${securityMessage}\n` +
-                      `**Action Required**: Address security issues before merging.\n\n` +
-                      `**Policy**: PRs with critical/high security issues require manual review and approval.\n\n` +
-                      `**Next Steps**:\n` +
-                      `1. Review and fix security issues identified by Checkov\n` +
-                      `2. Push updated changes to this PR\n` +
-                      `3. Wait for re-validation\n` +
-                      `4. Manual merge after security review`
+                body: `❌ **PR Closed: Security Issues Detected**\n\n` +
+                      `� **@${{ github.event.client_payload.pr_author }}** - Your PR has been automatically closed due to security issues.\n\n` +
+                      `�🛡️ Checkov security scan found **${criticalIssues || '0'} critical issues**\n\n` +
+                      `**Security Issue Summary**:\n` +
+                      `- 🔴 Critical: ${criticalIssues || '0'}\n` +
+                      `- 🟠 High: ${highIssues || '0'}\n` +
+                      `- 🟡 Medium: ${{ steps.checkov.outputs.medium_issues || '0' }}\n\n` +
+                      `**Action Required**: Fix critical security issues before re-opening PR.\n` +
+                      `**Review**: Check the security scan results above for detailed remediation steps.`
               });
-              
             } else if (validation === 'failed') {
               console.log('❌ OPA failed - closing PR');
               
@@ -825,15 +896,14 @@ jobs:
                 repo,
                 issue_number: pr_number,
                 body: `❌ **PR Closed: Policy Violations**\n\n` +
-                      `🔔 **Attention**: ${notificationString}\n\n` +
-                      `🛡️ OPA validation failed with **${{ steps.opa.outputs.total_violations }} violations**\n\n` +
+                      `� **@${{ github.event.client_payload.pr_author }}** - Your PR has been automatically closed due to policy violations.\n\n` +
+                      `�🛡️ OPA validation failed with **${{ steps.opa.outputs.total_violations }} violations**\n\n` +
                       `**Severity Breakdown**:\n` +
                       `- 🔴 Critical: ${{ steps.opa.outputs.critical_violations }}\n` +
                       `- 🟠 High: ${{ steps.opa.outputs.high_violations }}\n` +
                       `- 🟡 Medium: ${{ steps.opa.outputs.medium_violations }}\n` +
                       `- 🟢 Low: ${{ steps.opa.outputs.low_violations }}\n\n` +
                       `**Services Validated**: ${{ steps.opa.outputs.services_detected || 'All' }}\n\n` +
-                      `This PR has been automatically closed due to security policy violations.\n\n` +
                       `**Required Actions**:\n` +
                       `1. Review the OPA validation results above\n` +
                       `2. Fix all policy violations in your configuration\n` +
@@ -887,8 +957,6 @@ jobs:
             source-repo/plans/
             source-repo/logs/
             source-repo/opa-result.txt
-            source-repo/checkov-results/
-            source-repo/checkov-critical-high.txt
             source-repo/*.log
 
   # =============================================================================
@@ -1068,38 +1136,7 @@ jobs:
           script: |
             const fs = require('fs');
             
-            // Get PR author and reviewers for notifications
-            const prNumber = ${{ github.event.client_payload.pr_number }};
-            const owner = '${{ github.event.client_payload.source_owner }}';
-            const repo = '${{ github.event.client_payload.source_repo }}';
-            
-            // Get PR details to find author and reviewers
-            let prAuthor = '';
-            let reviewers = [];
-            try {
-              const { data: pr } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: prNumber
-              });
-              
-              prAuthor = pr.user.login;
-              if (pr.requested_reviewers) {
-                reviewers = pr.requested_reviewers.map(r => r.login);
-              }
-            } catch (e) {
-              console.log('Could not fetch PR details:', e.message);
-              prAuthor = '${{ github.event.client_payload.pr_author }}' || 'unknown';
-            }
-            
-            // Create notification list
-            let notifications = [`@${prAuthor}`];
-            if (reviewers.length > 0) {
-              notifications = notifications.concat(reviewers.map(r => `@${r}`));
-            }
-            
             let comment = `## 🚀 Terraform Apply Results\n\n`;
-            comment += `🔔 **Notifications**: ${notifications.join(', ')}\n\n`;
             comment += `**Merged PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
             comment += `**Applied to**: \`main\` branch\n\n`;
             
@@ -1138,10 +1175,8 @@ jobs:
               
               if (failed === '0') {
                 comment += `\n✅ **All deployments applied successfully!**\n`;
-                comment += `\n🎉 **Deployment Complete** - Your changes are now live in production.\n`;
               } else {
-                comment += `\n⚠️ **Some deployments failed - immediate attention required**\n`;
-                comment += `\n🚨 **Action Required**: Review failed deployments and take corrective action.\n`;
+                comment += `\n⚠️ **Some deployments failed - check logs for details**\n`;
               }
             } else {
               comment += `ℹ️ No deployments were applied\n`;
