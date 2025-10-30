@@ -7,7 +7,7 @@ projects:
       - kms
       - iam
 
-  app2:
+  test-4-poc-1:
     cost_center: CC-3001
     services:
       - rds
