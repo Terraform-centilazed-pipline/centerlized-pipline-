@@ -1,0 +1,93 @@
+# Checkov Infrastructure Security Configuration
+# Focus: Pure AWS infrastructure security checks only
+# No custom policies, no Python scripts - just built-in security validations
+
+# AWS Services in scope: KMS, S3, Lambda, IAM, SNS, SQS
+security_checks:
+  # CRITICAL - Will block deployment (Infrastructure Security)
+  critical:
+    # S3 Security Fundamentals
+    - CKV_AWS_18  # S3 bucket logging enabled
+    - CKV_AWS_19  # S3 bucket encryption enabled  
+    - CKV_AWS_20  # S3 bucket public read prohibited
+    - CKV_AWS_53  # S3 bucket public write prohibited
+    - CKV_AWS_54  # S3 bucket public ACL prohibited
+    - CKV_AWS_55  # S3 bucket public policy prohibited
+    
+    # IAM Security Fundamentals  
+    - CKV_AWS_1   # Root access key usage prohibited
+    - CKV_AWS_40  # IAM user console access requires MFA
+    - CKV_AWS_41  # IAM root user requires MFA
+    - CKV_AWS_60  # IAM user no inline policies
+    
+    # KMS Security Fundamentals
+    - CKV_AWS_7   # KMS key rotation enabled
+    
+  # HIGH - Important but may allow with warnings
+  high:
+    # S3 Advanced Security
+    - CKV_AWS_21  # S3 bucket versioning enabled
+    - CKV_AWS_56  # S3 bucket public read ACL prohibited
+    
+    # Lambda Security
+    - CKV_AWS_86  # Lambda environment variables encrypted
+    - CKV_AWS_115 # Lambda concurrent execution limit set
+    - CKV_AWS_117 # Lambda configured for VPC (if needed)
+    
+    # SNS Security  
+    - CKV_AWS_26  # SNS topic encryption enabled
+    
+    # SQS Security
+    - CKV_AWS_27  # SQS queue encryption enabled
+    
+    # IAM Security Best Practices
+    - CKV_AWS_108 # IAM policy no wildcard resources
+    - CKV_AWS_109 # IAM policy no wildcard actions
+    
+  # MEDIUM - Best practices (informational only)
+  medium:
+    # Lambda Best Practices
+    - CKV_AWS_50  # Lambda dead letter queue configured
+    - CKV_AWS_158 # Lambda reserved concurrency set
+    
+    # S3 Best Practices  
+    - CKV_AWS_144 # S3 cross-region replication (optional)
+
+# Checks to skip (not relevant for infrastructure security)
+skip_checks:
+  # Network/VPC (handled by network team)
+  - CKV_AWS_2   # ALB HTTPS (network concern)
+  - CKV_AWS_3   # ELB HTTPS (network concern) 
+  - CKV_AWS_4   # ALB redirect (network concern)
+  
+  # Database (separate security domain)
+  - CKV_AWS_8   # RDS encryption (DB team)
+  - CKV_AWS_16  # RDS encryption (DB team)
+  - CKV_AWS_25  # RDS encryption (DB team)
+  
+  # Monitoring/Logging (ops team)  
+  - CKV_AWS_24  # CloudTrail encryption (ops)
+  - CKV_AWS_35  # CloudWatch encryption (ops)
+  
+  # EC2/Compute (compute team)
+  - CKV_AWS_79  # EC2 metadata v2 (compute)
+  - CKV_AWS_126 # EC2 detailed monitoring (compute)
+
+# Simple blocking rules - infrastructure focused
+blocking_rules:
+  # Block ANY critical infrastructure security issue
+  critical_threshold: 0
+  
+  # Allow some high issues but warn (infrastructure complexity)
+  high_threshold: 2
+  
+  # Medium issues are just informational
+  medium_threshold: 999
+
+# Simple output configuration
+output:
+  formats:
+    - json
+    - cli
+  include_severity: true
+  include_remediation: false  # Keep output clean

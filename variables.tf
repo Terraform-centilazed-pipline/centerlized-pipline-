@@ -81,6 +81,12 @@ variable "assume_role_name" {
   default     = "TerraformExecutionRole"
 }
 
+variable "terraform_session_name" {
+  description = "Unique session name for Terraform execution (auto-injected by controller: team-environment-deployment)"
+  type        = string
+  default     = "terraform-deployment-session"
+}
+
 variable "common_tags" {
   description = "Common tags to be applied to all resources"
   type        = map(string)

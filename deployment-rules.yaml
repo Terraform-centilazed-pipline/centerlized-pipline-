@@ -1,4 +1,68 @@
-# Simple Project Cost Center Validation
+# Dynamic Multi-Tier Approval Configuration
+teams:
+  dev-team-alpha:
+    cost_center: "CC-1001"
+    members: ["pragadeeswarpa", "dev-teammate"]
+    budgets:
+      monthly_limit: 1000
+      approval_threshold: 200
+    permissions:
+      environments: ["development", "staging"]
+      auto_approve_under: 50
+      services: ["s3", "lambda", "dynamodb", "iam"]
+
+  platform-team:
+    cost_center: "PLATFORM"
+    members: ["pragadeeswarpa"]
+    permissions:
+      environments: ["all"]
+      can_override_opa: true
+      approval_required_for:
+        - production
+        - cross_account
+        - cost_over: 500
+
+cost_centers:
+  CC-1001:
+    name: "Platform Infrastructure"
+    monthly_budget: 2000
+    approval_thresholds:
+      team_approval: 200
+      platform_approval: 500
+  
+  CC-3001:
+    name: "Application Development"
+    monthly_budget: 3000
+    approval_thresholds:
+      team_approval: 300
+      platform_approval: 800
+
+  CC-9999:
+    name: "Testing and POC"
+    monthly_budget: 500
+    approval_thresholds:
+      team_approval: 100
+      platform_approval: 200
+
+# Dynamic routing rules
+routing_rules:
+  auto_approve:
+    - opa_pass: true
+    - cost_impact: "<50"
+    - environment: "!production"
+    - same_cost_center: true
+    
+  team_approval:
+    - cost_exceeds_threshold: true
+    - new_services: true
+    - cross_team_resources: true
+    
+  platform_approval:
+    - environment: "production"
+    - cost_impact: ">500" 
+    - opa_override_needed: true
+    - security_sensitive: true
+
 projects:
   test-poc-3:
     cost_center: CC-1001
@@ -7,19 +71,9 @@ projects:
       - kms
       - iam
 
-  app2:
+  test-4-poc-1:
     cost_center: CC-3001
     services:
       - rds
       - elasticache
       - secretsmanager
-
-cost_centers:
-  CC-1001: Platform Infrastructure
-  CC-3001: Application Development
-  CC-9999: Testing and POC
-
-approval_rules:
-  auto_approve_under: 50
-  tier1_threshold: 500
-  tier2_threshold: 2000

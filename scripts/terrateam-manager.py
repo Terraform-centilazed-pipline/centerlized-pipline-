@@ -121,59 +121,17 @@ class TerrateamStyleManager:
     
     def estimate_costs_from_plan(self, plan_json_path: str) -> CostEstimate:
         """
-        Estimate costs from terraform plan JSON
-        This is a simplified version - in production, use Infracost API
+        Cost estimation placeholder - will be implemented via MCP server later
+        
+        TODO: Implement with Infracost MCP server for accurate cost analysis
         """
-        with open(plan_json_path) as f:
-            plan = json.load(f)
-        
-        # Simplified cost estimation based on resource types
-        # In production, integrate with Infracost or AWS Pricing API
-        cost_map = {
-            "aws_s3_bucket": 0.023,  # ~$0.023/GB/month
-            "aws_instance": {
-                "t2.micro": 8.47,
-                "t2.small": 16.79,
-                "t2.medium": 33.58,
-                "t3.micro": 7.59,
-                "t3.small": 15.18,
-                "t3.medium": 30.37,
-            },
-            "aws_rds_cluster": 100.0,  # Approximate
-            "aws_lambda_function": 0.20,  # Per million requests
-            "aws_dynamodb_table": 25.0,  # On-demand approximate
-            "aws_vpc": 0.0,  # Free
-            "aws_nat_gateway": 32.85,  # Per gateway
-            "aws_efs_file_system": 30.0,  # Approximate
-        }
-        
-        monthly_cost = 0.0
-        breakdown = {}
-        
-        resource_changes = plan.get("resource_changes", [])
-        
-        for change in resource_changes:
-            if change.get("change", {}).get("actions") in [["create"], ["update"]]:
-                resource_type = change.get("type", "")
-                
-                if resource_type in cost_map:
-                    if isinstance(cost_map[resource_type], dict):
-                        # Handle instance types
-                        instance_type = change.get("change", {}).get("after", {}).get("instance_type", "t3.micro")
-                        cost = cost_map[resource_type].get(instance_type, 30.0)
-                    else:
-                        cost = cost_map[resource_type]
-                    
-                    monthly_cost += cost
-                    service = resource_type.split("_")[1] if "_" in resource_type else "other"
-                    breakdown[service] = breakdown.get(service, 0.0) + cost
-        
+        # Return zero costs for now - MCP server will handle this later
         return CostEstimate(
-            monthly_cost=monthly_cost,
-            hourly_cost=monthly_cost / 730,  # Average hours per month
-            cost_diff=monthly_cost,  # Simplified - would compare to baseline
-            cost_diff_percent=100.0,
-            breakdown_by_service=breakdown
+            monthly_cost=0.0,
+            hourly_cost=0.0,
+            cost_diff=0.0,
+            cost_diff_percent=0.0,
+            breakdown_by_service={}
         )
     
     def parse_resource_changes(self, plan_json_path: str) -> ResourceChanges:
@@ -209,12 +167,12 @@ class TerrateamStyleManager:
         environment: str
     ) -> Tuple[ApprovalTier, int]:
         """
-        Determine approval tier based on cost and resource changes
+        Determine approval tier based on resource changes and environment
+        Cost-based approval will be added later via MCP server
         
         Returns:
             (tier, required_approvals)
         """
-        thresholds = self.rules.get("cost_thresholds", {})
         resource_thresholds = self.rules.get("resource_thresholds", {})
         env_config = self.rules.get("environments", {}).get(environment, {})
         
@@ -222,31 +180,141 @@ class TerrateamStyleManager:
         if environment == "production" and not env_config.get("auto_approve_enabled", False):
             return ApprovalTier.TIER2, env_config.get("min_required_approvals", 2)
         
-        # Check cost-based tiers
-        monthly_cost = cost_estimate.monthly_cost
+        # Check resource-based tiers (cost checking removed - will be added via MCP later)
         
-        # Auto-approve tier
-        auto_threshold = thresholds.get("auto_approve", {})
-        if (monthly_cost <= auto_threshold.get("max_monthly_cost", 50.0) and
-            resource_changes.to_create <= resource_thresholds.get("auto_approve", {}).get("max_resources_created", 5) and
-            resource_changes.to_destroy <= resource_thresholds.get("auto_approve", {}).get("max_resources_destroyed", 3)):
+        # Auto-approve tier - based on resource count only
+        auto_threshold = resource_thresholds.get("auto_approve", {})
+        if (resource_changes.to_create <= auto_threshold.get("max_resources_created", 5) and
+            resource_changes.to_destroy <= auto_threshold.get("max_resources_destroyed", 3)):
             return ApprovalTier.AUTO_APPROVE, 0
         
-        # Tier 1
-        tier1_threshold = thresholds.get("tier1_approval", {})
-        if (monthly_cost <= tier1_threshold.get("max_monthly_cost", 500.0) and
-            resource_changes.to_create <= resource_thresholds.get("tier1_approval", {}).get("max_resources_created", 20)):
+        # Tier 1 - moderate resource changes
+        tier1_threshold = resource_thresholds.get("tier1_approval", {})
+        if resource_changes.to_create <= tier1_threshold.get("max_resources_created", 20):
             return ApprovalTier.TIER1, tier1_threshold.get("required_approvals", 1)
         
-        # Tier 2
-        tier2_threshold = thresholds.get("tier2_approval", {})
-        if monthly_cost <= tier2_threshold.get("max_monthly_cost", 2000.0):
-            return ApprovalTier.TIER2, tier2_threshold.get("required_approvals", 2)
-        
-        # Tier 3 (executive approval)
-        tier3_threshold = thresholds.get("tier3_approval", {})
-        return ApprovalTier.TIER3, tier3_threshold.get("required_approvals", 3)
+        # Tier 2 - high resource changes
+        tier2_threshold = self.rules.get("cost_thresholds", {}).get("tier2_approval", {})
+        return ApprovalTier.TIER2, tier2_threshold.get("required_approvals", 2)
     
+    def detect_services_from_tfvars(self, tfvars_path: str) -> List[str]:
+        """
+        Detect services from variable names in tfvars file
+        """
+        service_map = {
+            's3_buckets': 's3',
+            'kms_keys': 'kms',
+            'rds_instances': 'rds',
+            'lambda_functions': 'lambda',
+            'vpc_config': 'vpc',
+            'iam_roles': 'iam',
+            'ec2_instances': 'ec2',
+            'dynamodb_tables': 'dynamodb',
+            'efs_file_systems': 'efs',
+            'cloudwatch_alarms': 'cloudwatch',
+            'sns_topics': 'sns',
+            'sqs_queues': 'sqs'
+        }
+        
+        detected_services = []
+        
+        try:
+            with open(tfvars_path, 'r') as f:
+                content = f.read()
+                
+                for variable, service in service_map.items():
+                    if f'{variable} =' in content:
+                        detected_services.append(service)
+                        
+        except FileNotFoundError:
+            print(f"Warning: tfvars file not found: {tfvars_path}")
+            
+        return detected_services
+    
+    def extract_project_from_path(self, tfvars_path: str) -> str:
+        """
+        Extract project name from tfvars file path
+        Example: Accounts/test-4-poc-1/test-4-poc-1.tfvars -> test-4-poc-1
+        """
+        path = Path(tfvars_path)
+        
+        # Try to get project from directory name
+        if len(path.parts) >= 2:
+            project = path.parts[-2]  # Directory containing the tfvars file
+        else:
+            # Fall back to filename without extension
+            project = path.stem
+            
+        return project
+    
+    def get_account_short_name(self, account_id: str) -> str:
+        """
+        Convert account name to short name for backend paths
+        arj-wkld-a-prd -> a-prd
+        arj-wkld-a-nonprd -> a-nonprd
+        """
+        # Load accounts config
+        accounts_config_path = Path(__file__).parent.parent / "accounts.yaml"
+        
+        try:
+            with open(accounts_config_path) as f:
+                accounts_config = yaml.safe_load(f)
+                
+            account_name = accounts_config.get("accounts", {}).get(account_id, {}).get("account_name", "")
+            
+            # Convert arj-wkld-a-prd to a-prd
+            if account_name.startswith("arj-wkld-"):
+                return account_name.replace("arj-wkld-", "")
+            else:
+                return account_name
+                
+        except Exception as e:
+            print(f"Warning: Could not resolve account short name for {account_id}: {e}")
+            return account_id
+    
+    def generate_backend_key(self, tfvars_path: str, account_id: str) -> str:
+        """
+        Generate dynamic backend key based on services detected in tfvars
+        
+        Single service: terraform/{account_short}/{project}/{service}/terraform.tfstate
+        Multi service:  terraform/{account_short}/{project}/combined/terraform.tfstate
+        """
+        services = self.detect_services_from_tfvars(tfvars_path)
+        project = self.extract_project_from_path(tfvars_path)
+        account_short = self.get_account_short_name(account_id)
+        
+        if len(services) == 0:
+            # No services detected, use generic path
+            backend_key = f"terraform/{account_short}/{project}/generic/terraform.tfstate"
+        elif len(services) == 1:
+            # Single service deployment
+            service = services[0]
+            backend_key = f"terraform/{account_short}/{project}/{service}/terraform.tfstate"
+        else:
+            # Multi-service deployment - use combined state
+            backend_key = f"terraform/{account_short}/{project}/combined/terraform.tfstate"
+        
+        return backend_key
+    
+    def generate_backend_config(self, tfvars_path: str, account_id: str, region: str = "us-east-1") -> Dict[str, str]:
+        """
+        Generate complete backend configuration for terraform
+        """
+        backend_key = self.generate_backend_key(tfvars_path, account_id)
+        
+        # Assume S3 backend configuration
+        backend_config = {
+            "backend": "s3",
+            "bucket": f"terraform-state-{account_id}-{region}",
+            "key": backend_key,
+            "region": region,
+            "encrypt": "true",
+            "dynamodb_table": f"terraform-locks-{account_id}",
+            "workspace_key_prefix": "workspaces"
+        }
+        
+        return backend_config
+
     def make_deployment_decision(
         self,
         pr_author: str,
@@ -314,7 +382,7 @@ class TerrateamStyleManager:
                 approved=True,
                 approval_tier=approval_tier,
                 required_approvals=0,
-                reason=f"✅ Auto-approved: Low cost (${cost_estimate.monthly_cost:.2f}/mo) and impact",
+                reason=f"✅ Auto-approved: Low resource impact ({resource_changes.total} resources)",
                 cost_estimate=cost_estimate,
                 resource_changes=resource_changes,
                 team_authorized=True,
@@ -326,7 +394,7 @@ class TerrateamStyleManager:
             approved=False,
             approval_tier=approval_tier,
             required_approvals=required_approvals,
-            reason=f"⏳ Approval required: {required_approvals} approver(s) needed (${cost_estimate.monthly_cost:.2f}/mo)",
+            reason=f"⏳ Approval required: {required_approvals} approver(s) needed ({resource_changes.total} resources)",
             cost_estimate=cost_estimate,
             resource_changes=resource_changes,
             team_authorized=True,
@@ -372,7 +440,7 @@ class TerrateamStyleManager:
         comment += f"| 🗑️ **To Destroy** | `{decision.resource_changes.to_destroy}` |\n"
         comment += f"| **Total** | **`{decision.resource_changes.total}`** |\n\n"
         
-        # Cost estimation
+        # Cost estimation - only show if we have actual cost data
         if decision.cost_estimate and decision.cost_estimate.monthly_cost > 0:
             comment += "### 💰 Cost Estimation\n\n"
             comment += f"**Monthly Cost:** `${decision.cost_estimate.monthly_cost:.2f} USD/month`\n\n"
@@ -382,6 +450,9 @@ class TerrateamStyleManager:
                 for service, cost in sorted(decision.cost_estimate.breakdown_by_service.items(), key=lambda x: x[1], reverse=True):
                     comment += f"- **{service.upper()}**: ${cost:.2f}/month\n"
                 comment += "\n"
+        else:
+            comment += "### 💰 Cost Estimation\n\n"
+            comment += "💡 Cost analysis will be available via MCP server integration\n\n"
         
         # Security status
         comment += "### 🛡️ Security Validation\n\n"
@@ -424,8 +495,8 @@ class TerrateamStyleManager:
 
 def main():
     """Main entry point"""
-    if len(sys.argv) < 8:
-        print("Usage: terrateam-manager.py <pr_author> <account> <environment> <service> <plan_json> <opa_passed> <critical_violations>")
+    if len(sys.argv) < 9:
+        print("Usage: terrateam-manager.py <pr_author> <account> <environment> <service> <plan_json> <opa_passed> <critical_violations> <tfvars_file> [region]")
         sys.exit(1)
     
     pr_author = sys.argv[1]
@@ -435,6 +506,8 @@ def main():
     plan_json_path = sys.argv[5]
     opa_passed = sys.argv[6].lower() == "true"
     critical_violations = int(sys.argv[7])
+    tfvars_file = sys.argv[8]
+    region = sys.argv[9] if len(sys.argv) > 9 else "us-east-1"
     
     try:
         manager = TerrateamStyleManager("controller/deployment-rules.yaml")
@@ -448,6 +521,26 @@ def main():
             opa_passed=opa_passed,
             critical_violations=critical_violations
         )
+        
+        # Generate backend configuration
+        backend_config = manager.generate_backend_config(tfvars_file, account, region)
+        
+        # Output backend configuration
+        backend_output = {
+            "backend_type": backend_config["backend"],
+            "backend_bucket": backend_config["bucket"],
+            "backend_key": backend_config["key"],
+            "detected_services": manager.detect_services_from_tfvars(tfvars_file),
+            "project_name": manager.extract_project_from_path(tfvars_file),
+            "account_short_name": manager.get_account_short_name(account)
+        }
+        
+        # Also save backend config to file
+        with open("backend-config.json", "w") as f:
+            json.dump(backend_config, f, indent=2)
+            
+        with open("backend-info.json", "w") as f:
+            json.dump(backend_output, f, indent=2)
         
         # Output decision as JSON
         output = {

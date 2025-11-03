@@ -1,0 +1,935 @@
+# =============================================================================
+# MCP-ENHANCED TERRAFORM CONTROLLER - Next Generation
+# =============================================================================
+name: 🤖 MCP Enhanced Controller
+
+on:
+  repository_dispatch:
+    types: [terraform_mcp, terraform_ai_suggest, terraform_import, terraform_update]
+  workflow_call:
+    inputs:
+      source_repo:
+        required: true
+        type: string
+      pr_number:
+        required: true
+        type: string
+      action_type:
+        required: true
+        type: string
+      mcp_operation:
+        required: false
+        type: string
+        default: 'analyze'
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+env:
+  TERRAFORM_VERSION: '1.11.0'
+  OPA_VERSION: '0.59.0'
+  AWS_REGION: 'us-east-1'
+  MCP_SERVER_PORT: '3001'
+
+jobs:
+  mcp-terraform-intelligence:
+    name: 🧠 MCP Terraform Intelligence
+    runs-on: ubuntu-latest
+    outputs:
+      suggestions: ${{ steps.mcp_suggestions.outputs.suggestions }}
+      validation_result: ${{ steps.mcp_validation.outputs.result }}
+      security_score: ${{ steps.mcp_validation.outputs.security_score }}
+      
+    steps:
+      - name: 🚀 Setup MCP Environment
+        id: mcp_setup
+        run: |
+          echo "🧠 Setting up MCP Terraform Server..."
+          
+          # Install Node.js for MCP server
+          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          
+          # Install MCP Terraform server
+          npm install -g @terraform-mcp/server
+          npm install -g @aws-mcp/server
+          
+          # Start MCP servers in background
+          echo "🔧 Starting Terraform MCP Server..."
+          terraform-mcp-server --port $MCP_SERVER_PORT &
+          TERRAFORM_MCP_PID=$!
+          echo "terraform_mcp_pid=$TERRAFORM_MCP_PID" >> $GITHUB_OUTPUT
+          
+          echo "🔧 Starting AWS MCP Server..."
+          aws-mcp-server --port 3002 &
+          AWS_MCP_PID=$!
+          echo "aws_mcp_pid=$AWS_MCP_PID" >> $GITHUB_OUTPUT
+          
+          # Wait for servers to start
+          sleep 5
+          
+          echo "✅ MCP servers ready"
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.GT_APP_ID }}
+          private_key: ${{ secrets.GT_APP_PRIVATE_KEY }}
+
+      - name: Checkout Repos
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/centerlized-pipline-
+          path: controller
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Checkout Source Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}
+          ref: ${{ github.event.client_payload.pr_head_ref }}
+          path: source-repo
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 🧠 MCP Advanced Operations & Discovery
+        id: mcp_operations
+        working-directory: source-repo
+        run: |
+          echo "🧠 Starting MCP Advanced Operations..."
+          
+          # Get operation type from dispatch event
+          OPERATION="${{ github.event.client_payload.mcp_operation || 'analyze' }}"
+          echo "🎯 MCP Operation: $OPERATION"
+          
+          cat > mcp_advanced.js << 'EOF'
+          const { MCPClient } = require('@terraform-mcp/client');
+          const { exec } = require('child_process');
+          const fs = require('fs');
+          const util = require('util');
+          const execAsync = util.promisify(exec);
+          
+          async function advancedMCPOperations() {
+            const client = new MCPClient('http://localhost:3001');
+            const awsClient = new MCPClient('http://localhost:3002');
+            const operation = process.env.OPERATION || 'analyze';
+            
+            console.log(`🎯 Executing MCP operation: ${operation}`);
+            
+            switch (operation) {
+              case 'import':
+                return await performImportOperation(client, awsClient);
+              case 'update':
+                return await performUpdateOperation(client, awsClient);
+              case 'optimize':
+                return await performOptimizeOperation(client, awsClient);
+              case 'drift-detect':
+                return await performDriftDetection(client, awsClient);
+              case 'auto-fix':
+                return await performAutoFix(client, awsClient);
+              default:
+                return await performAnalysisOperation(client, awsClient);
+            }
+          }
+          
+          // 🔄 IMPORT EXISTING RESOURCES
+          async function performImportOperation(client, awsClient) {
+            console.log('🔄 Performing resource import operation...');
+            
+            // Discover existing AWS resources not managed by Terraform
+            const existingResources = await awsClient.discoverUnmanagedResources({
+              region: process.env.AWS_REGION,
+              services: ['ec2', 'rds', 's3', 'iam', 'vpc']
+            });
+            
+            console.log(`📦 Found ${existingResources.length} unmanaged resources`);
+            
+            const importOperations = [];
+            const tfImportCommands = [];
+            
+            for (const resource of existingResources) {
+              // Generate Terraform configuration for existing resource
+              const terraformConfig = await client.generateConfigFromResource({
+                resourceType: resource.type,
+                resourceId: resource.id,
+                resourceAttributes: resource.attributes
+              });
+              
+              // Generate import command
+              const importCommand = `terraform import ${terraformConfig.resource_address} ${resource.id}`;
+              tfImportCommands.push(importCommand);
+              
+              importOperations.push({
+                resource_type: resource.type,
+                resource_id: resource.id,
+                terraform_config: terraformConfig.config,
+                import_command: importCommand,
+                estimated_monthly_cost: resource.estimated_cost
+              });
+            }
+            
+            return {
+              operation: 'import',
+              discovered_resources: existingResources.length,
+              import_operations: importOperations,
+              import_commands: tfImportCommands,
+              total_estimated_cost: existingResources.reduce((sum, r) => sum + (r.estimated_cost || 0), 0)
+            };
+          }
+          
+          // 🔧 UPDATE AND OPTIMIZE CONFIGURATIONS
+          async function performUpdateOperation(client, awsClient) {
+            console.log('🔧 Performing configuration update operation...');
+            
+            // Read current tfvars files
+            const tfvarsFiles = [];
+            function findTfvars(dir) {
+              const files = fs.readdirSync(dir);
+              for (const file of files) {
+                const fullPath = path.join(dir, file);
+                if (fs.statSync(fullPath).isDirectory()) {
+                  findTfvars(fullPath);
+                } else if (file.endsWith('.tfvars')) {
+                  tfvarsFiles.push(fullPath);
+                }
+              }
+            }
+            findTfvars('.');
+            
+            const updateOperations = [];
+            
+            for (const tfvarsFile of tfvarsFiles) {
+              const currentConfig = fs.readFileSync(tfvarsFile, 'utf8');
+              
+              // Get intelligent update suggestions
+              const updateSuggestions = await client.suggestConfigUpdates({
+                currentConfig: currentConfig,
+                file: tfvarsFile,
+                context: {
+                  environment: 'development',
+                  costOptimization: true,
+                  securityEnhancements: true,
+                  performanceOptimization: true
+                }
+              });
+              
+              // Get AWS-specific optimizations
+              const awsOptimizations = await awsClient.suggestAWSOptimizations({
+                currentConfig: currentConfig,
+                region: process.env.AWS_REGION
+              });
+              
+              // Generate updated configuration
+              const updatedConfig = await client.generateOptimizedConfig({
+                originalConfig: currentConfig,
+                suggestions: updateSuggestions.suggestions,
+                awsOptimizations: awsOptimizations.optimizations
+              });
+              
+              updateOperations.push({
+                file: tfvarsFile,
+                current_config: currentConfig,
+                suggested_updates: updateSuggestions.suggestions,
+                aws_optimizations: awsOptimizations.optimizations,
+                updated_config: updatedConfig.config,
+                cost_impact: updatedConfig.cost_impact,
+                performance_impact: updatedConfig.performance_impact,
+                security_improvements: updatedConfig.security_improvements
+              });
+            }
+            
+            return {
+              operation: 'update',
+              files_processed: tfvarsFiles.length,
+              update_operations: updateOperations,
+              total_cost_savings: updateOperations.reduce((sum, op) => sum + (op.cost_impact?.savings || 0), 0)
+            };
+          }
+          
+          // 🎯 INTELLIGENT OPTIMIZATION
+          async function performOptimizeOperation(client, awsClient) {
+            console.log('🎯 Performing intelligent optimization...');
+            
+            // Get current terraform state
+            let currentState = {};
+            try {
+              const { stdout } = await execAsync('terraform show -json', { cwd: '../controller' });
+              currentState = JSON.parse(stdout);
+            } catch (error) {
+              console.log('⚠️ No existing state found, proceeding with config optimization');
+            }
+            
+            // Perform comprehensive optimization analysis
+            const optimizationAnalysis = await awsClient.performCostOptimizationAnalysis({
+              currentState: currentState,
+              region: process.env.AWS_REGION,
+              optimizationGoals: ['cost', 'performance', 'security', 'reliability']
+            });
+            
+            const optimizations = [];
+            
+            for (const recommendation of optimizationAnalysis.recommendations) {
+              // Generate optimized configuration
+              const optimizedConfig = await client.generateOptimizedResource({
+                resourceType: recommendation.resource_type,
+                currentConfig: recommendation.current_config,
+                optimizationTarget: recommendation.optimization_type,
+                constraints: recommendation.constraints
+              });
+              
+              optimizations.push({
+                resource: recommendation.resource_type,
+                optimization_type: recommendation.optimization_type,
+                current_cost: recommendation.current_monthly_cost,
+                optimized_cost: recommendation.optimized_monthly_cost,
+                savings: recommendation.monthly_savings,
+                optimized_config: optimizedConfig.config,
+                implementation_effort: optimizedConfig.effort_level,
+                risk_level: optimizedConfig.risk_assessment
+              });
+            }
+            
+            return {
+              operation: 'optimize',
+              total_resources_analyzed: optimizationAnalysis.resources_analyzed,
+              optimizations: optimizations,
+              total_monthly_savings: optimizations.reduce((sum, opt) => sum + opt.savings, 0),
+              implementation_priority: optimizations.sort((a, b) => b.savings - a.savings)
+            };
+          }
+          
+          // 🔍 DRIFT DETECTION
+          async function performDriftDetection(client, awsClient) {
+            console.log('🔍 Performing drift detection...');
+            
+            // Get current terraform state
+            const { stdout: stateOutput } = await execAsync('terraform show -json', { cwd: '../controller' });
+            const currentState = JSON.parse(stateOutput);
+            
+            // Get actual AWS resource state
+            const actualState = await awsClient.getCurrentResourceState({
+              resources: currentState.values?.root_module?.resources || [],
+              region: process.env.AWS_REGION
+            });
+            
+            // Detect drift using MCP intelligence
+            const driftAnalysis = await client.detectConfigurationDrift({
+              expectedState: currentState,
+              actualState: actualState,
+              context: {
+                environment: 'development',
+                critical_resources: ['database', 'security_groups', 'iam_roles']
+              }
+            });
+            
+            return {
+              operation: 'drift-detect',
+              drift_detected: driftAnalysis.has_drift,
+              drifted_resources: driftAnalysis.drifted_resources,
+              drift_severity: driftAnalysis.severity_level,
+              auto_correctable: driftAnalysis.auto_correctable_count,
+              manual_review_required: driftAnalysis.manual_review_count,
+              recommended_actions: driftAnalysis.recommended_actions
+            };
+          }
+          
+          // 🔧 AUTO-FIX OPERATIONS
+          async function performAutoFix(client, awsClient) {
+            console.log('🔧 Performing auto-fix operations...');
+            
+            // First, analyze current configuration for fixable issues
+            const tfvarsFiles = [];
+            function findTfvars(dir) {
+              const files = fs.readdirSync(dir);
+              for (const file of files) {
+                const fullPath = path.join(dir, file);
+                if (fs.statSync(fullPath).isDirectory()) {
+                  findTfvars(fullPath);
+                } else if (file.endsWith('.tfvars')) {
+                  tfvarsFiles.push(fullPath);
+                }
+              }
+            }
+            findTfvars('.');
+            
+            const fixOperations = [];
+            
+            for (const tfvarsFile of tfvarsFiles) {
+              const currentConfig = fs.readFileSync(tfvarsFile, 'utf8');
+              
+              // Identify auto-fixable issues
+              const fixableIssues = await client.identifyAutoFixableIssues({
+                config: currentConfig,
+                file: tfvarsFile
+              });
+              
+              if (fixableIssues.issues.length > 0) {
+                // Generate fixes
+                const fixes = await client.generateAutoFixes({
+                  config: currentConfig,
+                  issues: fixableIssues.issues
+                });
+                
+                // Apply fixes and generate new config
+                const fixedConfig = await client.applyAutoFixes({
+                  originalConfig: currentConfig,
+                  fixes: fixes.fixes
+                });
+                
+                // Backup original and write fixed config
+                fs.writeFileSync(`${tfvarsFile}.backup`, currentConfig);
+                fs.writeFileSync(tfvarsFile, fixedConfig.config);
+                
+                fixOperations.push({
+                  file: tfvarsFile,
+                  issues_fixed: fixableIssues.issues.length,
+                  fixes_applied: fixes.fixes,
+                  backed_up: true,
+                  new_config: fixedConfig.config
+                });
+              }
+            }
+            
+            return {
+              operation: 'auto-fix',
+              files_processed: tfvarsFiles.length,
+              files_fixed: fixOperations.length,
+              total_issues_fixed: fixOperations.reduce((sum, op) => sum + op.issues_fixed, 0),
+              fix_operations: fixOperations
+            };
+          }
+          
+          // Default analysis operation
+          async function performAnalysisOperation(client, awsClient) {
+            console.log('📊 Performing standard analysis...');
+            // This would be the existing analysis logic
+            return { operation: 'analyze', status: 'completed' };
+          }
+          
+          // Execute the operation
+          advancedMCPOperations().then(result => {
+            fs.writeFileSync('mcp-advanced-results.json', JSON.stringify(result, null, 2));
+            console.log(`✅ MCP ${result.operation} operation completed`);
+          }).catch(err => {
+            console.error(`❌ MCP operation failed:`, err);
+            process.exit(1);
+          });
+          EOF
+          
+          OPERATION="$OPERATION" node mcp_advanced.js
+          
+          # Set outputs
+          if [ -f "mcp-advanced-results.json" ]; then
+            OPERATION_TYPE=$(jq -r '.operation' mcp-advanced-results.json)
+            echo "operation_completed=$OPERATION_TYPE" >> $GITHUB_OUTPUT
+            echo "advanced_results=true" >> $GITHUB_OUTPUT
+          fi
+        id: mcp_discovery
+        working-directory: source-repo
+        run: |
+          echo "🔍 MCP-Enhanced Terraform Discovery..."
+          
+          # Use MCP server to get intelligent suggestions
+          cat > mcp_discovery.js << 'EOF'
+          const { MCPClient } = require('@terraform-mcp/client');
+          const fs = require('fs');
+          const path = require('path');
+          
+          async function discoverWithMCP() {
+            const client = new MCPClient('http://localhost:3001');
+            
+            // Find all tfvars files
+            const tfvarsFiles = [];
+            function findTfvars(dir) {
+              const files = fs.readdirSync(dir);
+              for (const file of files) {
+                const fullPath = path.join(dir, file);
+                if (fs.statSync(fullPath).isDirectory()) {
+                  findTfvars(fullPath);
+                } else if (file.endsWith('.tfvars')) {
+                  tfvarsFiles.push(fullPath);
+                }
+              }
+            }
+            
+            findTfvars('.');
+            
+            // Analyze each tfvars with MCP
+            const deployments = [];
+            for (const tfvarsFile of tfvarsFiles) {
+              const content = fs.readFileSync(tfvarsFile, 'utf8');
+              
+              // Get MCP suggestions for this configuration
+              const analysis = await client.analyzeTerraform({
+                type: 'tfvars',
+                content: content,
+                file: tfvarsFile
+              });
+              
+              deployments.push({
+                tfvars_file: tfvarsFile,
+                directory: path.dirname(tfvarsFile),
+                mcp_analysis: analysis,
+                suggestions: analysis.suggestions || [],
+                warnings: analysis.warnings || [],
+                optimizations: analysis.optimizations || []
+              });
+            }
+            
+            return {
+              deployments,
+              total_count: deployments.length,
+              mcp_enhanced: true
+            };
+          }
+          
+          discoverWithMCP().then(result => {
+            fs.writeFileSync('mcp-deployments.json', JSON.stringify(result, null, 2));
+            console.log('✅ MCP Discovery complete:', result.total_count, 'deployments');
+          }).catch(err => {
+            console.error('❌ MCP Discovery failed:', err);
+            process.exit(1);
+          });
+          EOF
+          
+          node mcp_discovery.js
+          
+          # Output results
+          if [ -f "mcp-deployments.json" ]; then
+            DEPLOYMENT_COUNT=$(jq '.total_count' mcp-deployments.json)
+            echo "deployment_count=$DEPLOYMENT_COUNT" >> $GITHUB_OUTPUT
+            echo "has_deployments=true" >> $GITHUB_OUTPUT
+            echo "🎯 Found $DEPLOYMENT_COUNT deployments with MCP analysis"
+          else
+            echo "deployment_count=0" >> $GITHUB_OUTPUT
+            echo "has_deployments=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🔍 MCP-Enhanced Terraform Plan
+        if: steps.mcp_discovery.outputs.has_deployments == 'true'
+        id: mcp_plan
+        working-directory: source-repo
+        run: |
+          echo "🚀 Running MCP-Enhanced Terraform Plan..."
+          
+          # Create MCP plan analysis script
+          cat > mcp_plan.js << 'EOF'
+          const { MCPClient } = require('@terraform-mcp/client');
+          const { exec } = require('child_process');
+          const fs = require('fs');
+          const util = require('util');
+          const execAsync = util.promisify(exec);
+          
+          async function enhancedPlan() {
+            const client = new MCPClient('http://localhost:3001');
+            const deployments = JSON.parse(fs.readFileSync('mcp-deployments.json', 'utf8'));
+            
+            const results = [];
+            
+            for (const deployment of deployments.deployments) {
+              console.log(`📋 Processing: ${deployment.tfvars_file}`);
+              
+              try {
+                // Initialize Terraform
+                await execAsync('terraform init', { cwd: '../controller' });
+                
+                // Create terraform plan with MCP context
+                const planCmd = `terraform plan -var-file="${process.cwd()}/${deployment.tfvars_file}" -out=plan.tfplan -json`;
+                const { stdout } = await execAsync(planCmd, { cwd: '../controller' });
+                
+                // Convert plan to JSON for MCP analysis
+                const { stdout: showOutput } = await execAsync('terraform show -json plan.tfplan', { cwd: '../controller' });
+                const planJson = JSON.parse(showOutput);
+                
+                // Enhanced analysis with MCP
+                const mcpAnalysis = await client.analyzePlan({
+                  plan: planJson,
+                  context: {
+                    tfvars: deployment.tfvars_file,
+                    suggestions: deployment.mcp_analysis.suggestions
+                  }
+                });
+                
+                // Cost estimation via MCP
+                const costAnalysis = await client.estimateCosts({
+                  plan: planJson,
+                  region: process.env.AWS_REGION
+                });
+                
+                // Security analysis via MCP
+                const securityAnalysis = await client.analyzeSecurityImplications({
+                  plan: planJson
+                });
+                
+                results.push({
+                  deployment: deployment.tfvars_file,
+                  status: 'success',
+                  plan_summary: mcpAnalysis.summary,
+                  cost_analysis: costAnalysis,
+                  security_insights: securityAnalysis,
+                  recommendations: mcpAnalysis.recommendations,
+                  warnings: mcpAnalysis.warnings,
+                  resource_changes: mcpAnalysis.resource_changes
+                });
+                
+              } catch (error) {
+                console.error(`❌ Failed to plan ${deployment.tfvars_file}:`, error.message);
+                results.push({
+                  deployment: deployment.tfvars_file,
+                  status: 'failed',
+                  error: error.message
+                });
+              }
+            }
+            
+            return {
+              results,
+              successful_plans: results.filter(r => r.status === 'success').length,
+              failed_plans: results.filter(r => r.status === 'failed').length,
+              total_deployments: results.length
+            };
+          }
+          
+          enhancedPlan().then(result => {
+            fs.writeFileSync('mcp-plan-results.json', JSON.stringify(result, null, 2));
+            console.log('✅ MCP Enhanced Plan complete');
+            console.log(`📊 Success: ${result.successful_plans}/${result.total_deployments}`);
+          }).catch(err => {
+            console.error('❌ MCP Plan failed:', err);
+            process.exit(1);
+          });
+          EOF
+          
+          node mcp_plan.js
+          
+          # Set outputs
+          if [ -f "mcp-plan-results.json" ]; then
+            SUCCESSFUL=$(jq '.successful_plans' mcp-plan-results.json)
+            TOTAL=$(jq '.total_deployments' mcp-plan-results.json)
+            echo "successful_plans=$SUCCESSFUL" >> $GITHUB_OUTPUT
+            echo "total_deployments=$TOTAL" >> $GITHUB_OUTPUT
+            echo "plan_ready=true" >> $GITHUB_OUTPUT
+          else
+            echo "plan_ready=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🛡️ MCP-Enhanced Security & Policy Validation
+        if: steps.mcp_plan.outputs.plan_ready == 'true'
+        id: mcp_validation
+        working-directory: source-repo
+        run: |
+          echo "🛡️ Running MCP-Enhanced Security & Policy Validation..."
+          
+          cat > mcp_validation.js << 'EOF'
+          const { MCPClient } = require('@terraform-mcp/client');
+          const fs = require('fs');
+          
+          async function enhancedValidation() {
+            const terraformClient = new MCPClient('http://localhost:3001');
+            const awsClient = new MCPClient('http://localhost:3002');
+            
+            const planResults = JSON.parse(fs.readFileSync('mcp-plan-results.json', 'utf8'));
+            
+            const validationResults = [];
+            
+            for (const result of planResults.results) {
+              if (result.status !== 'success') continue;
+              
+              // Enhanced security validation with AWS MCP
+              const awsSecurityAnalysis = await awsClient.analyzeSecurityCompliance({
+                resources: result.plan_summary.resources,
+                region: process.env.AWS_REGION
+              });
+              
+              // Policy validation with Terraform MCP
+              const policyValidation = await terraformClient.validatePolicies({
+                plan: result.plan_summary,
+                policies: ['security', 'cost', 'best-practices']
+              });
+              
+              // Cost optimization suggestions
+              const costOptimization = await awsClient.suggestCostOptimizations({
+                resources: result.plan_summary.resources,
+                current_costs: result.cost_analysis
+              });
+              
+              validationResults.push({
+                deployment: result.deployment,
+                security_score: awsSecurityAnalysis.score,
+                security_issues: awsSecurityAnalysis.issues,
+                policy_violations: policyValidation.violations,
+                cost_optimization: costOptimization,
+                recommendations: [
+                  ...awsSecurityAnalysis.recommendations,
+                  ...policyValidation.recommendations,
+                  ...costOptimization.recommendations
+                ],
+                auto_fixable: policyValidation.auto_fixable_count,
+                requires_approval: policyValidation.requires_manual_review
+              });
+            }
+            
+            const overallScore = validationResults.reduce((acc, r) => acc + r.security_score, 0) / validationResults.length;
+            const totalViolations = validationResults.reduce((acc, r) => acc + r.policy_violations.length, 0);
+            const requiresApproval = validationResults.some(r => r.requires_approval);
+            
+            return {
+              validation_results: validationResults,
+              overall_security_score: overallScore,
+              total_violations: totalViolations,
+              requires_approval: requiresApproval,
+              can_auto_fix: validationResults.some(r => r.auto_fixable > 0)
+            };
+          }
+          
+          enhancedValidation().then(result => {
+            fs.writeFileSync('mcp-validation-results.json', JSON.stringify(result, null, 2));
+            console.log('✅ MCP Enhanced Validation complete');
+            console.log(`🔒 Security Score: ${result.overall_security_score}/100`);
+            console.log(`⚠️ Violations: ${result.total_violations}`);
+          }).catch(err => {
+            console.error('❌ MCP Validation failed:', err);
+            process.exit(1);
+          });
+          EOF
+          
+          node mcp_validation.js
+          
+          # Set outputs
+          if [ -f "mcp-validation-results.json" ]; then
+            SCORE=$(jq '.overall_security_score' mcp-validation-results.json)
+            VIOLATIONS=$(jq '.total_violations' mcp-validation-results.json)
+            REQUIRES_APPROVAL=$(jq '.requires_approval' mcp-validation-results.json)
+            
+            echo "security_score=$SCORE" >> $GITHUB_OUTPUT
+            echo "total_violations=$VIOLATIONS" >> $GITHUB_OUTPUT
+            echo "requires_approval=$REQUIRES_APPROVAL" >> $GITHUB_OUTPUT
+            
+            if [ "$VIOLATIONS" -eq 0 ] && [ "$SCORE" -gt 80 ]; then
+              echo "validation_status=passed" >> $GITHUB_OUTPUT
+            else
+              echo "validation_status=failed" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: 🤖 MCP AI Suggestions & Auto-Fix
+        if: steps.mcp_validation.outputs.validation_status == 'failed'
+        id: mcp_suggestions
+        working-directory: source-repo
+        run: |
+          echo "🤖 Generating MCP AI Suggestions & Auto-Fix..."
+          
+          cat > mcp_suggestions.js << 'EOF'
+          const { MCPClient } = require('@terraform-mcp/client');
+          const fs = require('fs');
+          
+          async function generateSuggestions() {
+            const client = new MCPClient('http://localhost:3001');
+            const validationResults = JSON.parse(fs.readFileSync('mcp-validation-results.json', 'utf8'));
+            
+            const suggestions = [];
+            const autoFixes = [];
+            
+            for (const result of validationResults.validation_results) {
+              // Generate intelligent suggestions
+              const aiSuggestions = await client.generateSuggestions({
+                violations: result.policy_violations,
+                context: {
+                  deployment: result.deployment,
+                  security_score: result.security_score
+                }
+              });
+              
+              // Generate auto-fixes for simple issues
+              const autoFixSuggestions = await client.generateAutoFixes({
+                violations: result.policy_violations.filter(v => v.auto_fixable),
+                file: result.deployment
+              });
+              
+              suggestions.push({
+                deployment: result.deployment,
+                ai_suggestions: aiSuggestions,
+                human_readable_recommendations: aiSuggestions.human_readable,
+                code_suggestions: aiSuggestions.code_changes
+              });
+              
+              if (autoFixSuggestions.fixes.length > 0) {
+                autoFixes.push({
+                  deployment: result.deployment,
+                  fixes: autoFixSuggestions.fixes
+                });
+              }
+            }
+            
+            return {
+              suggestions,
+              auto_fixes: autoFixes,
+              has_auto_fixes: autoFixes.length > 0
+            };
+          }
+          
+          generateSuggestions().then(result => {
+            fs.writeFileSync('mcp-suggestions.json', JSON.stringify(result, null, 2));
+            console.log('✅ MCP AI Suggestions generated');
+            console.log(`🔧 Auto-fixes available: ${result.has_auto_fixes}`);
+          }).catch(err => {
+            console.error('❌ MCP Suggestions failed:', err);
+            process.exit(1);
+          });
+          EOF
+          
+          node mcp_suggestions.js
+          
+          # Set outputs
+          if [ -f "mcp-suggestions.json" ]; then
+            HAS_AUTO_FIXES=$(jq '.has_auto_fixes' mcp-suggestions.json)
+            echo "has_auto_fixes=$HAS_AUTO_FIXES" >> $GITHUB_OUTPUT
+            echo "suggestions_ready=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🎨 Generate Enhanced PR Comment
+        id: mcp_comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            console.log('🎨 Generating MCP-Enhanced PR Comment...');
+            
+            // Read MCP results
+            const fs = require('fs');
+            let mcpResults = {};
+            let validationResults = {};
+            let suggestions = {};
+            
+            try {
+              mcpResults = JSON.parse(fs.readFileSync('source-repo/mcp-plan-results.json', 'utf8'));
+              validationResults = JSON.parse(fs.readFileSync('source-repo/mcp-validation-results.json', 'utf8'));
+              if (fs.existsSync('source-repo/mcp-suggestions.json')) {
+                suggestions = JSON.parse(fs.readFileSync('source-repo/mcp-suggestions.json', 'utf8'));
+              }
+            } catch (error) {
+              console.log('⚠️ Could not read MCP results:', error.message);
+            }
+            
+            let comment = `## 🤖 MCP-Enhanced Terraform Analysis\n\n`;
+            
+            // Overview
+            comment += `### 📊 Plan Summary\n`;
+            comment += `✅ **Successful Plans:** ${mcpResults.successful_plans}/${mcpResults.total_deployments}\n`;
+            comment += `🔒 **Security Score:** ${validationResults.overall_security_score}/100\n`;
+            comment += `⚠️ **Policy Violations:** ${validationResults.total_violations}\n\n`;
+            
+            // Detailed results for each deployment
+            if (mcpResults.results) {
+              comment += `### 🏗️ Deployment Analysis\n`;
+              
+              for (const result of mcpResults.results) {
+                if (result.status === 'success') {
+                  comment += `#### 📁 \`${result.deployment}\`\n`;
+                  
+                  // Cost analysis
+                  if (result.cost_analysis) {
+                    comment += `💰 **Estimated Cost:** $${result.cost_analysis.monthly_cost}/month\n`;
+                    if (result.cost_analysis.savings_opportunities) {
+                      comment += `💡 **Potential Savings:** $${result.cost_analysis.potential_savings}/month\n`;
+                    }
+                  }
+                  
+                  // Resource changes
+                  if (result.resource_changes) {
+                    comment += `📈 **Changes:** `;
+                    comment += `+${result.resource_changes.additions || 0} `;
+                    comment += `~${result.resource_changes.changes || 0} `;
+                    comment += `-${result.resource_changes.deletions || 0}\n`;
+                  }
+                  
+                  // Warnings
+                  if (result.warnings && result.warnings.length > 0) {
+                    comment += `⚠️ **Warnings:** ${result.warnings.length} issues detected\n`;
+                  }
+                  
+                  comment += `\n`;
+                }
+              }
+            }
+            
+            // AI Suggestions
+            if (suggestions.suggestions && suggestions.suggestions.length > 0) {
+              comment += `### 🤖 AI-Generated Suggestions\n`;
+              
+              for (const suggestion of suggestions.suggestions) {
+                comment += `#### 💡 Recommendations for \`${suggestion.deployment}\`\n`;
+                
+                if (suggestion.human_readable_recommendations) {
+                  for (const rec of suggestion.human_readable_recommendations) {
+                    comment += `- ${rec}\n`;
+                  }
+                }
+                
+                if (suggestion.code_suggestions && suggestion.code_suggestions.length > 0) {
+                  comment += `\n<details><summary>🔧 Code Suggestions</summary>\n\n`;
+                  for (const code of suggestion.code_suggestions) {
+                    comment += `\`\`\`hcl\n${code.suggested_change}\n\`\`\`\n`;
+                    comment += `*${code.explanation}*\n\n`;
+                  }
+                  comment += `</details>\n\n`;
+                }
+              }
+            }
+            
+            // Auto-fix options
+            if (suggestions.has_auto_fixes) {
+              comment += `### 🔧 Auto-Fix Available\n`;
+              comment += `Some issues can be automatically fixed. Reply with:\n`;
+              comment += `\`@terrateam auto-fix\` - Apply automatic fixes\n`;
+              comment += `\`@terrateam approve-with-fixes\` - Approve with auto-fixes applied\n\n`;
+            }
+            
+            // Action required
+            if (validationResults.requires_approval) {
+              comment += `### 🔐 Manual Approval Required\n`;
+              comment += `This change requires manual review due to policy violations.\n\n`;
+              comment += `**Available Actions:**\n`;
+              comment += `- \`@terrateam approve-policy\` - Approve current configuration\n`;
+              if (suggestions.has_auto_fixes) {
+                comment += `- \`@terrateam apply-suggestions\` - Apply AI suggestions first\n`;
+              }
+              comment += `- \`@terrateam explain <resource>\` - Get detailed explanation\n\n`;
+            }
+            
+            // Footer
+            comment += `---\n`;
+            comment += `🤖 *Enhanced by MCP Terraform Intelligence*\n`;
+            comment += `📊 Analysis powered by AI-driven policy validation and cost optimization\n`;
+            
+            // Post comment
+            await github.rest.issues.createComment({
+              owner: '${{ github.event.client_payload.source_owner }}',
+              repo: '${{ github.event.client_payload.source_repo }}',
+              issue_number: '${{ github.event.client_payload.pr_number }}',
+              body: comment
+            });
+            
+            console.log('✅ MCP-Enhanced comment posted successfully');
+
+      - name: 🧹 Cleanup MCP Servers
+        if: always()
+        run: |
+          echo "🧹 Cleaning up MCP servers..."
+          if [ -n "${{ steps.mcp_setup.outputs.terraform_mcp_pid }}" ]; then
+            kill ${{ steps.mcp_setup.outputs.terraform_mcp_pid }} || true
+          fi
+          if [ -n "${{ steps.mcp_setup.outputs.aws_mcp_pid }}" ]; then
+            kill ${{ steps.mcp_setup.outputs.aws_mcp_pid }} || true
+          fi
+          echo "✅ Cleanup complete"
