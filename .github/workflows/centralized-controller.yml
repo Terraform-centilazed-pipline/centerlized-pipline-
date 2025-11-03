@@ -67,6 +67,9 @@ jobs:
 
       - name: 🔧 Setup Tools
         run: |
+          # Configure Git for Terraform module access
+          git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+          
           # Setup Terraform
           curl -fsSL https://releases.hashicorp.com/terraform/${{ env.TERRAFORM_VERSION }}/terraform_${{ env.TERRAFORM_VERSION }}_linux_amd64.zip -o terraform.zip
           unzip terraform.zip && sudo mv terraform /usr/local/bin/
@@ -117,12 +120,13 @@ jobs:
           MEDIUM_CHECKS=$(yq eval '.security_checks.medium[]' ../controller/checkov-config.yaml | tr '\n' ',' | sed 's/,$//')
           ALL_CHECKS="${CRITICAL_CHECKS},${HIGH_CHECKS},${MEDIUM_CHECKS}"
           
-          # Run Checkov
+          # Run Checkov on directory instead of specific files
           mkdir -p checkov-results
           docker run --rm -v $PWD:/tf bridgecrew/checkov:latest \
             --framework terraform --check $ALL_CHECKS \
             --output json --output-file-path /tf/checkov-results/ \
-            --quiet --soft-fail --compact $DEPLOYMENT_FILES || true
+            --quiet --soft-fail --compact \
+            --directory /tf/Accounts || true
           
           # Process results
           if [ -f "checkov-results/results_json.json" ]; then
@@ -573,6 +577,9 @@ jobs:
 
       - name: 🔧 Setup Terraform
         run: |
+          # Configure Git for Terraform module access
+          git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+          
           curl -fsSL https://releases.hashicorp.com/terraform/${{ env.TERRAFORM_VERSION }}/terraform_${{ env.TERRAFORM_VERSION }}_linux_amd64.zip -o terraform.zip
           unzip terraform.zip && sudo mv terraform /usr/local/bin/
 
