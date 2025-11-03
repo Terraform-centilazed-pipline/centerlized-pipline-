@@ -88,7 +88,7 @@ jobs:
         run: |
           echo "🔍 Discovering deployments..."
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
-            --output-summary deployments.json --debug
+            --output-summary deployments.json --debug --working-dir .
           
           if [ -f deployments.json ]; then
             deployments=$(jq -r '.total_deployments // 0' deployments.json)
@@ -164,7 +164,7 @@ jobs:
           
           set +e
           python3 ../controller/scripts/terraform-deployment-orchestrator.py plan \
-            --deployments-json deployments.json --output-summary plan-results.json --debug
+            --deployments-json deployments.json --output-summary plan-results.json --debug --working-dir .
           plan_exit_code=$?
           set -e
           
@@ -582,7 +582,7 @@ jobs:
         run: |
           echo "🔍 Discovering deployments for apply..."
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
-            --output-summary deployments.json --debug
+            --output-summary deployments.json --debug --working-dir .
           
           if [ -f deployments.json ]; then
             deployments=$(jq -r '.total_deployments // 0' deployments.json)
@@ -603,7 +603,7 @@ jobs:
           
           set +e
           python3 ../controller/scripts/terraform-deployment-orchestrator.py apply \
-            --deployments-json deployments.json --output-summary apply-results.json --debug
+            --deployments-json deployments.json --output-summary apply-results.json --debug --working-dir .
           apply_exit_code=$?
           set -e
           

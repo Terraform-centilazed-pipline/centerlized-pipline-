@@ -39,11 +39,11 @@ def strip_ansi_colors(text):
 class TerraformOrchestrator:
     """Terraform Deployment Orchestrator for multi-account, multi-resource deployments"""
     
-    def __init__(self):
+    def __init__(self, working_dir=None):
         import os
         self.script_dir = Path(__file__).parent
         # Store the working directory (where discover is run from - has Accounts/)
-        self.working_dir = Path.cwd()
+        self.working_dir = Path(working_dir) if working_dir else Path.cwd()
         # Check for TERRAFORM_DIR environment variable (used in centralized workflow)
         terraform_dir_env = os.getenv('TERRAFORM_DIR')
         if terraform_dir_env:
@@ -52,8 +52,8 @@ class TerraformOrchestrator:
             debug_print(f"Working directory (source files): {self.working_dir}")
         else:
             self.project_root = self.script_dir.parent
-            self.working_dir = self.project_root
             debug_print(f"Using default project root: {self.project_root}")
+            debug_print(f"Working directory (source files): {self.working_dir}")
         
         self.accounts_config = self._load_accounts_config()
         self.templates_dir = self.project_root / "templates"
@@ -800,6 +800,7 @@ def main():
     parser.add_argument("--output-summary", help="JSON output file")
     parser.add_argument("--deployments-json", help="Load deployments from JSON")
     parser.add_argument("--state-bucket", help="S3 bucket for Terraform state")
+    parser.add_argument("--working-dir", help="Working directory for deployment discovery")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be deployed without executing")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     
@@ -811,7 +812,7 @@ def main():
     debug_print(f"Arguments: {vars(args)}")
     
     try:
-        orchestrator = TerraformOrchestrator()
+        orchestrator = TerraformOrchestrator(working_dir=args.working_dir)
         
         # Build filters
         filters = {}
