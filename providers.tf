@@ -36,9 +36,11 @@ provider "aws" {
   region = var.aws_regions[var.s3_buckets[keys(var.s3_buckets)[0]].region_code].name
 
   # Assume role for cross-account access
+  # Role ARN comes from tfvars (account_id extracted by controller)
+  # Session name is unique per team/environment deployment
   assume_role {
     role_arn     = "arn:aws:iam::${var.accounts[var.s3_buckets[keys(var.s3_buckets)[0]].account_key].id}:role/${var.assume_role_name}"
-    session_name = "S3TerraformDeploySession"
+    session_name = var.terraform_session_name  # Dynamic per deployment
   }
 
   # Default tags applied to all resources

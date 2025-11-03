@@ -1,0 +1,147 @@
+# 🔐 Approval Configuration System
+
+## Configuration Options for Policy Approvers
+
+# =============================================================================
+# CURRENT ACTIVE CONFIGURATION
+# =============================================================================
+approvers:
+  # Individual GitHub usernames who can approve
+  users:
+    - "engineering-lead"
+    - "devops-manager" 
+    - "security-architect"
+    - "platform-engineer"
+    - "your-github-username"  # Add your own username
+
+  # GitHub teams who can approve (format: team-name, not @org/team-name)
+  teams:
+    - "engineering-team"      # Members of @org/engineering-team
+    - "security-team"         # Members of @org/security-team
+    - "devops-team"          # Members of @org/devops-team
+
+# =============================================================================
+# APPROVAL RULES CONFIGURATION
+# =============================================================================
+approval_rules:
+  # How many approvals needed
+  required_approvals: 1
+  
+  # Allow self-approval (if PR author is also approver)
+  allow_self_approval: false
+  
+  # Approval timeout (hours)
+  timeout_hours: 72
+  
+  # Emergency override users (can bypass rules)
+  emergency_overrides:
+    - "cto"
+    - "security-director"
+    - "ops-manager"
+
+# =============================================================================
+# NOTIFICATION SETTINGS
+# =============================================================================
+notifications:
+  slack:
+    # Slack channels to notify when approval needed
+    channels:
+      - "#engineering-approvals"
+      - "#security-alerts" 
+      
+  email:
+    # Email addresses to notify
+    addresses:
+      - "engineering-team@company.com"
+      - "security@company.com"
+
+# =============================================================================
+# DIFFERENT VIOLATION TYPES → DIFFERENT APPROVERS
+# =============================================================================
+violation_type_approvers:
+  security_violations:
+    teams: ["security-team"]
+    users: ["security-lead"]
+    required_approvals: 2  # Need 2 approvals for security issues
+    
+  policy_violations: 
+    teams: ["engineering-team"]
+    users: ["engineering-lead"]
+    required_approvals: 1
+    
+  critical_violations:
+    teams: ["security-team", "engineering-team"] 
+    users: ["cto", "security-director"]
+    required_approvals: 2  # Need both security AND engineering approval
+
+# =============================================================================
+# 💰 COST-BASED APPROVAL RULES FOR INFRASTRUCTURE
+# =============================================================================
+cost_approval_rules:
+  # Low cost changes - Regular team approvers
+  low_cost:
+    threshold: "$100/month"
+    teams: ["platform-team", "devops-team"]
+    users: ["platform-engineer", "devops-manager"]
+    required_approvals: 1
+    
+  # Medium cost changes - Senior team approval
+  medium_cost:
+    threshold: "$500/month" 
+    teams: ["engineering-team"]
+    users: ["engineering-lead", "platform-lead", "devops-manager"]
+    required_approvals: 1
+    
+  # High cost changes - Leadership approval required
+  high_cost:
+    threshold: "$2000/month"
+    teams: ["leadership-team"]
+    users: ["engineering-director", "cto", "finance-manager"]
+    required_approvals: 2  # Need 2 approvals for expensive changes
+    
+  # Critical/Enterprise cost - Executive approval
+  enterprise_cost:
+    threshold: "$10000/month"
+    teams: ["executive-team"]
+    users: ["cto", "cfo", "ceo"]
+    required_approvals: 2  # Need executive approval
+    notification_required: true  # Send Slack/email alerts
+
+# =============================================================================
+# 🏗️ INFRASTRUCTURE-SPECIFIC APPROVAL RULES
+# =============================================================================
+infrastructure_approvers:
+  # Database changes - DBA + Security approval
+  database_changes:
+    resources: ["aws_db_instance", "aws_rds_cluster", "azurerm_sql_database"]
+    teams: ["dba-team", "security-team"]
+    users: ["database-admin", "security-lead"]
+    required_approvals: 2
+    
+  # Network changes - Network team approval
+  network_changes:
+    resources: ["aws_vpc", "aws_subnet", "aws_security_group", "azurerm_virtual_network"]
+    teams: ["network-team"]
+    users: ["network-engineer", "security-architect"]
+    required_approvals: 1
+    
+  # Compute/scaling changes - Platform approval
+  compute_changes:
+    resources: ["aws_instance", "aws_autoscaling_group", "azurerm_virtual_machine"]
+    teams: ["platform-team"]
+    users: ["platform-engineer", "devops-manager"]
+    required_approvals: 1
+    
+  # Security resources - Security team approval
+  security_changes:
+    resources: ["aws_iam", "aws_kms", "azurerm_key_vault", "security_group"]
+    teams: ["security-team"]
+    users: ["security-lead", "security-architect"]
+    required_approvals: 2  # Always need 2 security approvals
+    
+  # Storage changes - Data team approval  
+  storage_changes:
+    resources: ["aws_s3_bucket", "azurerm_storage_account", "aws_ebs_volume"]
+    teams: ["data-team", "platform-team"]
+    users: ["data-engineer", "storage-admin"]
+    required_approvals: 1
