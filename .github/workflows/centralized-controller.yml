@@ -88,7 +88,7 @@ jobs:
         run: |
           echo "🔍 Discovering deployments..."
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
-            --output-json deployments.json --debug
+            --output-summary deployments.json --debug
           
           if [ -f deployments.json ]; then
             deployments=$(jq -r '.total_deployments // 0' deployments.json)
@@ -582,7 +582,7 @@ jobs:
         run: |
           echo "🔍 Discovering deployments for apply..."
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
-            --output-json deployments.json --debug
+            --output-summary deployments.json --debug
           
           if [ -f deployments.json ]; then
             deployments=$(jq -r '.total_deployments // 0' deployments.json)
