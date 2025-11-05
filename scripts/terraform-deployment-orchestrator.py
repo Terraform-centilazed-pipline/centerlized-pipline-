@@ -491,12 +491,35 @@ class TerraformOrchestrator:
             # Add plan file information for successful plans
             if is_successful and action == "plan":
                 result_data['plan_file'] = str(plan_file_path)
-                result_data['has_changes'] = result['returncode'] == 2
+                
+                # Primary method: Use return code (2 = changes)
+                has_changes_returncode = result['returncode'] == 2
+                
+                # Secondary method: Parse plan output for "Plan:" line
+                has_changes_output = False
+                if result['output']:
+                    # Look for lines like "Plan: 0 to add, 1 to change, 0 to destroy"
+                    plan_lines = [line for line in result['output'].split('\n') if 'Plan:' in line and 'to add' in line]
+                    for line in plan_lines:
+                        # Extract numbers from plan line
+                        import re
+                        numbers = re.findall(r'(\d+) to (?:add|change|destroy)', line)
+                        if numbers:
+                            # If any operation count > 0, there are changes
+                            has_changes_output = any(int(num) > 0 for num in numbers)
+                            debug_print(f"Plan line analysis: {line} -> changes: {has_changes_output}")
+                            break
+                
+                # Use return code as primary, output parsing as fallback
+                result_data['has_changes'] = has_changes_returncode or has_changes_output
+                
                 debug_print(f"Plan generated successfully: {plan_file_path}")
-                debug_print(f"Changes detected: {result['returncode'] == 2}")
+                debug_print(f"Return code: {result['returncode']} (changes: {has_changes_returncode})")
+                debug_print(f"Output analysis: changes: {has_changes_output}")
+                debug_print(f"Final has_changes: {result_data['has_changes']}")
                 
                 # Save plan output as markdown for PR comments
-                markdown_file = self._save_plan_as_markdown(deployment, result['output'], result['returncode'] == 2)
+                markdown_file = self._save_plan_as_markdown(deployment, result['output'], result_data['has_changes'])
                 if markdown_file:
                     result_data['markdown_file'] = markdown_file
                     print(f"✅ Generated markdown file: {markdown_file}")

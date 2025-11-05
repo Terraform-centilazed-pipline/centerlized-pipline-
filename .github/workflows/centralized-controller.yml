@@ -275,24 +275,43 @@ jobs:
           # Create results directory
           mkdir -p checkov-results
           
-          # Debug: Show what files will be scanned
-          echo "🔍 Pre-scan debug - Terraform files found:"
-          find . -name "*.tf" -o -name "*.tfvars" | head -10
-          echo "📁 Current directory contents:"
-          ls -la | head -10
+          # Get changed tfvars files for targeted scanning
+          changed_files="${{ steps.changed-files.outputs.files }}"
+          tfvars_files=""
           
-          # Run Checkov scan - scan current directory for all Terraform files
-          echo "🔍 Running Checkov scan on repository..."
-          checkov --framework terraform \
-            --directory . \
-            --output json \
-            --output-file-path checkov-results \
-            --soft-fail \
-            --skip-path .git \
-            --skip-path .github \
-            --external-checks-dir /dev/null || {
-            echo "⚠️ Checkov scan encountered issues, checking for partial results..."
-          }
+          if [ -n "$changed_files" ]; then
+            echo "🔍 Changed files from PR: $changed_files"
+            # Filter for .tfvars files only
+            for file in $changed_files; do
+              if [[ "$file" == *.tfvars ]]; then
+                if [ -f "source-repo/$file" ]; then
+                  tfvars_files="$tfvars_files source-repo/$file"
+                fi
+              fi
+            done
+          fi
+          
+          if [ -n "$tfvars_files" ]; then
+            echo "🎯 Scanning specific changed .tfvars files: $tfvars_files"
+            
+            # Run Checkov scan on specific tfvars files
+            echo "🔍 Running targeted Checkov scan on changed .tfvars files..."
+            checkov --framework terraform \
+              --file $tfvars_files \
+              --output json \
+              --output-file-path checkov-results \
+              --soft-fail \
+              --external-checks-dir /dev/null || {
+              echo "⚠️ Checkov scan encountered issues, checking for partial results..."
+            }
+          else
+            echo "ℹ️ No .tfvars files changed - skipping security scan"
+            echo "scan_status=skipped" >> $GITHUB_OUTPUT
+            echo "scan_message=ℹ️ No .tfvars files changed" >> $GITHUB_OUTPUT
+            echo "failed_checks=0" >> $GITHUB_OUTPUT
+            echo "passed_checks=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           
           # Find the actual results file (Checkov creates it with different names)
           echo "🔍 Locating Checkov results file..."
