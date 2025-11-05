@@ -13,7 +13,7 @@ output "deployment_summary" {
   description = "Summary of all deployed resources"
   value = {
     account_id   = data.aws_caller_identity.current.account_id
-    region       = data.aws_region.current.name
+    region       = data.aws_region.current.id
     s3_buckets   = length(local.processed_s3_buckets)
     kms_keys     = length(local.processed_kms_keys)
     iam_users    = length(local.merged_iam_users)
