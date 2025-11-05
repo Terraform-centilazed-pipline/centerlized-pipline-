@@ -47,7 +47,7 @@ jobs:
       - name: Checkout Centralized Controller Repo
         uses: actions/checkout@v4
         with:
-          repository: Terraform-centilazed-pipline/centerlized-pipline-
+          repository: mmctech/mmctech-aws-s3-tf-poc
           path: controller
           token: ${{ steps.app-token.outputs.token }}
 
@@ -62,17 +62,17 @@ jobs:
       - name: Checkout OPA Policies
         uses: actions/checkout@v4
         with:
-          repository: Terraform-centilazed-pipline/OPA-Poclies
+          repository: mmctech/mmctech-aws-tf-opa-polices 
           path: opa-policies
           token: ${{ steps.app-token.outputs.token }}
 
       # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
-      # Module sources now use: git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/<NAME>
+      # Module sources now use: git::https://github.com/mmctech/tf-module.git//Module/<NAME>
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME}}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: terraform-controller
 
@@ -485,7 +485,7 @@ jobs:
             
             comment += `\n---\n`;
             comment += `🤖 *Centralized Controller* | `;
-            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            comment += `[View Run](https://github.com/mmctech/mmctech-aws-s3-tf-poc/actions/runs/${{ github.run_id }})`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
@@ -587,84 +587,32 @@ jobs:
               console.log('❌ PR closed due to policy violations');
             }
 
-      # ===== STEP 6: TRIGGER ARGOCD SYNC (instead of direct apply) =====
-      - name: 🚀 Trigger ArgoCD Sync
+      # ===== STEP 6: TRIGGER TERRAFORM APPLY (after successful merge) =====
+      - name: 🚀 Trigger Terraform Apply
         if: steps.merge.outputs.merged == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            console.log('🚀 Triggering ArgoCD sync for Terraform deployment...');
+            console.log('🚀 Triggering Terraform Apply workflow...');
             
-            // Instead of running terraform apply directly, 
-            // trigger ArgoCD to sync the infrastructure
-            const argocdApi = 'https://argocd.your-domain.com/api/v1';
-            const appName = 'terraform-infrastructure';
-            
-            try {
-              // Trigger ArgoCD application sync
-              const response = await fetch(`${argocdApi}/applications/${appName}/sync`, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${{ secrets.ARGOCD_TOKEN }}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  revision: 'main',
-                  prune: true,
-                  dryRun: false,
-                  strategy: {
-                    apply: {
-                      force: false
-                    }
-                  }
-                })
-              });
-              
-              if (response.ok) {
-                const result = await response.json();
-                console.log('✅ ArgoCD sync triggered successfully');
-                console.log('Sync operation ID:', result.metadata?.name);
-                
-                // Post success comment
-                await github.rest.issues.createComment({
-                  owner: '${{ github.event.client_payload.source_owner }}',
-                  repo: '${{ github.event.client_payload.source_repo }}',
-                  issue_number: ${{ github.event.client_payload.pr_number }},
-                  body: `✅ **ArgoCD Deployment Triggered!**\n\n` +
-                        `🚀 Infrastructure deployment started via ArgoCD\n` +
-                        `📊 Application: \`${appName}\`\n` +
-                        `🔄 Sync Operation: \`${result.metadata?.name || 'N/A'}\`\n\n` +
-                        `**Monitor Progress**: [ArgoCD Dashboard](https://argocd.your-domain.com/applications/${appName})\n\n` +
-                        `ArgoCD will:\n` +
-                        `- 🔍 Continuously monitor for drift\n` +
-                        `- 🔄 Auto-heal any configuration drift\n` +
-                        `- 📊 Provide real-time deployment status\n` +
-                        `- 🔙 Enable easy rollbacks if needed`
-                });
-                
-              } else {
-                throw new Error(`ArgoCD API error: ${response.status} ${response.statusText}`);
+            // Dispatch apply event to this same workflow
+            await github.rest.repos.createDispatchEvent({
+              owner: 'mmctech',
+              repo: 'mmctech-aws-s3-tf-poc',
+              event_type: 'terraform_apply',
+              client_payload: {
+                source_owner: '${{ github.event.client_payload.source_owner }}',
+                source_repo: '${{ github.event.client_payload.source_repo }}',
+                pr_number: ${{ github.event.client_payload.pr_number }},
+                pr_url: '${{ github.event.client_payload.pr_url }}',
+                merge_commit_sha: '${{ steps.merge.outputs.merge_sha }}',
+                action: 'apply',
+                merged: 'true'
               }
-              
-            } catch (error) {
-              console.error('❌ Failed to trigger ArgoCD sync:', error);
-              
-              // Fallback to GitHub comment
-              await github.rest.issues.createComment({
-                owner: '${{ github.event.client_payload.source_owner }}',
-                repo: '${{ github.event.client_payload.source_repo }}',
-                issue_number: ${{ github.event.client_payload.pr_number }},
-                body: `⚠️ **ArgoCD Sync Failed**\n\nCould not trigger ArgoCD deployment automatically.\n\n` +
-                      `**Manual Action Required**:\n` +
-                      `1. Go to [ArgoCD Dashboard](https://argocd.your-domain.com)\n` +
-                      `2. Navigate to \`${appName}\` application\n` +
-                      `3. Click "Sync" to deploy the merged changes\n\n` +
-                      `Error: ${error.message}`
-              });
-              
-              core.setFailed(`ArgoCD sync failed: ${error.message}`);
-            }
+            });
+            
+            console.log('✅ Apply workflow triggered');
 
       # ===== UPLOAD ARTIFACTS =====
       - name: 📦 Upload Artifacts
@@ -709,7 +657,7 @@ jobs:
       - name: Checkout Centralized Controller Repo
         uses: actions/checkout@v4
         with:
-          repository: Terraform-centilazed-pipline/centerlized-pipline-
+          repository: mmctech/mmctech-aws-s3-tf-poc
           path: controller
           token: ${{ steps.app-token.outputs.token }}
 
@@ -721,8 +669,9 @@ jobs:
           path: source-repo
           token: ${{ steps.app-token.outputs.token }}
 
+
       # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
-      # Module sources now use: git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/<NAME>
+      # Module sources now use: git::https://github.com/mmctech/tf-module.git//Module/<NAME>
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -742,7 +691,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: terraform-apply
 
@@ -901,7 +850,7 @@ jobs:
             
             comment += `\n---\n`;
             comment += `🤖 *Centralized Controller - Apply* | `;
-            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            comment += `[View Run](https://github.com/mmctech/mmctech-aws-s3-tf-poc/actions/runs/${{ github.run_id }})`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
