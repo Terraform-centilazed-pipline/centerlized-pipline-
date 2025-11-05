@@ -275,39 +275,53 @@ jobs:
           # Create results directory
           mkdir -p checkov-results
           
-          # Get changed tfvars files for targeted scanning
-          changed_files="${{ steps.changed-files.outputs.files }}"
-          tfvars_files=""
-          
-          if [ -n "$changed_files" ]; then
-            echo "🔍 Changed files from PR: $changed_files"
-            # Filter for .tfvars files only
-            for file in $changed_files; do
-              if [[ "$file" == *.tfvars ]]; then
-                if [ -f "source-repo/$file" ]; then
-                  tfvars_files="$tfvars_files source-repo/$file"
-                fi
-              fi
-            done
+          # Use discovered deployments from earlier step
+          if [ ! -f "source-repo/deployments.json" ]; then
+            echo "❌ No deployments.json found - skipping security scan"
+            echo "scan_status=skipped" >> $GITHUB_OUTPUT
+            echo "scan_message=ℹ️ No deployments discovered" >> $GITHUB_OUTPUT
+            echo "failed_checks=0" >> $GITHUB_OUTPUT
+            echo "passed_checks=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
-          if [ -n "$tfvars_files" ]; then
-            echo "🎯 Scanning specific changed .tfvars files: $tfvars_files"
+          # Extract all tfvars files from discovered deployments
+          tfvars_files=$(jq -r '.deployments[]?.tfvars_file // .deployments[]?.file' source-repo/deployments.json | tr '\n' ' ')
+          
+          if [ -n "$tfvars_files" ] && [ "$tfvars_files" != " " ]; then
+            # Convert relative paths to full paths from source-repo
+            full_paths=""
+            for file in $tfvars_files; do
+              if [[ "$file" != "null" ]] && [ -n "$file" ]; then
+                full_paths="$full_paths source-repo/$file"
+              fi
+            done
             
-            # Run Checkov scan on specific tfvars files
-            echo "🔍 Running targeted Checkov scan on changed .tfvars files..."
-            checkov --framework terraform \
-              --file $tfvars_files \
-              --output json \
-              --output-file-path checkov-results \
-              --soft-fail \
-              --external-checks-dir /dev/null || {
-              echo "⚠️ Checkov scan encountered issues, checking for partial results..."
-            }
+            if [ -n "$full_paths" ]; then
+              echo "🎯 Scanning discovered .tfvars files: $full_paths"
+              
+              # Run Checkov scan on discovered tfvars files
+              echo "🔍 Running targeted Checkov scan on discovered deployments..."
+              checkov --framework terraform \
+                --file $full_paths \
+                --output json \
+                --output-file-path checkov-results \
+                --soft-fail \
+                --external-checks-dir /dev/null || {
+                echo "⚠️ Checkov scan encountered issues, checking for partial results..."
+              }
+            else
+              echo "ℹ️ No valid .tfvars files in discovered deployments"
+              echo "scan_status=skipped" >> $GITHUB_OUTPUT
+              echo "scan_message=ℹ️ No valid .tfvars files found" >> $GITHUB_OUTPUT
+              echo "failed_checks=0" >> $GITHUB_OUTPUT
+              echo "passed_checks=0" >> $GITHUB_OUTPUT
+              exit 0
+            fi
           else
-            echo "ℹ️ No .tfvars files changed - skipping security scan"
+            echo "ℹ️ No .tfvars files in discovered deployments - skipping security scan"
             echo "scan_status=skipped" >> $GITHUB_OUTPUT
-            echo "scan_message=ℹ️ No .tfvars files changed" >> $GITHUB_OUTPUT
+            echo "scan_message=ℹ️ No .tfvars files in deployments" >> $GITHUB_OUTPUT
             echo "failed_checks=0" >> $GITHUB_OUTPUT
             echo "passed_checks=0" >> $GITHUB_OUTPUT
             exit 0
