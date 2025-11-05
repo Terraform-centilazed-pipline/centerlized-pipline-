@@ -275,18 +275,22 @@ jobs:
           # Create results directory
           mkdir -p checkov-results
           
+          # Debug: Show what files will be scanned
+          echo "🔍 Pre-scan debug - Terraform files found:"
+          find . -name "*.tf" -o -name "*.tfvars" | head -10
+          echo "📁 Current directory contents:"
+          ls -la | head -10
+          
           # Run Checkov scan - scan current directory for all Terraform files
-          echo "🔍 Running Checkov scan on entire repository..."
+          echo "🔍 Running Checkov scan on repository..."
           checkov --framework terraform \
             --directory . \
             --output json \
             --output-file-path checkov-results \
-            --quiet \
             --soft-fail \
-            --compact \
             --skip-path .git \
             --skip-path .github \
-            --external-checks-dir /dev/null 2>/dev/null || {
+            --external-checks-dir /dev/null || {
             echo "⚠️ Checkov scan encountered issues, checking for partial results..."
           }
           
@@ -343,20 +347,27 @@ jobs:
             # Extract results with better error handling
             failed_checks=$(jq '.failed' "$results_file" 2>/dev/null || echo "0")
             passed_checks=$(jq '.passed' "$results_file" 2>/dev/null || echo "0")
+            resource_count=$(jq '.resource_count' "$results_file" 2>/dev/null || echo "0")
             
             # If using older format, try alternative parsing
             if [ "$failed_checks" = "null" ] || [ "$passed_checks" = "null" ]; then
               echo "🔄 Alternative parsing attempt..."
               failed_checks=$(jq 'if has("results") then .results.failed_checks | length else 0 end' "$results_file" 2>/dev/null || echo "0")
               passed_checks=$(jq 'if has("results") then .results.passed_checks | length else 0 end' "$results_file" 2>/dev/null || echo "0")
+              resource_count=$(jq 'if has("summary") then .summary.resource_count else 0 end' "$results_file" 2>/dev/null || echo "0")
             fi
             
-            echo "🔍 Security scan completed: $failed_checks failed, $passed_checks passed"
+            echo "🔍 Security scan completed: $failed_checks failed, $passed_checks passed, $resource_count resources scanned"
             echo "failed_checks=$failed_checks" >> $GITHUB_OUTPUT
             echo "passed_checks=$passed_checks" >> $GITHUB_OUTPUT
             
-            # Determine status
-            if [ "$failed_checks" != "0" ] && [ "$failed_checks" -gt 0 ] 2>/dev/null; then
+            # Check if no resources were found to scan
+            if [ "$resource_count" = "0" ] || [ "$resource_count" = "null" ]; then
+              echo "⚠️ No Terraform resources found to scan"
+              echo "scan_status=skipped" >> $GITHUB_OUTPUT
+              echo "scan_message=⚠️ No Terraform resources found to scan" >> $GITHUB_OUTPUT
+            # Determine status based on findings
+            elif [ "$failed_checks" != "0" ] && [ "$failed_checks" -gt 0 ] 2>/dev/null; then
               echo "scan_status=warning" >> $GITHUB_OUTPUT
               echo "scan_message=⚠️ Security issues found ($failed_checks)" >> $GITHUB_OUTPUT
               
@@ -369,7 +380,7 @@ jobs:
               fi
             else
               echo "scan_status=passed" >> $GITHUB_OUTPUT
-              echo "scan_message=✅ Security scan passed" >> $GITHUB_OUTPUT
+              echo "scan_message=✅ Security scan passed ($resource_count resources)" >> $GITHUB_OUTPUT
             fi
             
             # Copy results to standard location for artifact upload
