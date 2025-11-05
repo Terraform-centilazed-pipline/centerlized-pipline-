@@ -280,7 +280,7 @@ jobs:
           checkov --framework terraform \
             --directory . \
             --output json \
-            --output-file-path checkov-results/results.json \
+            --output-file-path ./checkov-results.json \
             --quiet \
             --soft-fail \
             --compact \
@@ -288,14 +288,14 @@ jobs:
             --skip-path .github \
             --external-checks-dir /dev/null 2>/dev/null || {
             echo "⚠️ Checkov scan encountered issues, checking for partial results..."
-            if [ ! -f "checkov-results/results.json" ]; then
+            if [ ! -f "./checkov-results.json" ]; then
               # Try a simpler scan
               echo "🔄 Trying simplified Checkov scan..."
               checkov --framework terraform \
                 --directory . \
                 --output json \
                 --quiet \
-                --soft-fail 2>checkov-error.log 1>checkov-results/results.json || {
+                --soft-fail 2>checkov-error.log 1>./checkov-results.json || {
                 echo "❌ All Checkov scan attempts failed"
                 echo "📋 Error log:"
                 cat checkov-error.log 2>/dev/null || echo "No error log available"
@@ -309,9 +309,9 @@ jobs:
           }
           
           # Process results
-          if [ -f "checkov-results/results.json" ]; then
+          if [ -f "./checkov-results.json" ]; then
             echo "✅ Checkov results file found"
-            file_size=$(wc -c < checkov-results/results.json)
+            file_size=$(wc -c < ./checkov-results.json)
             echo "📄 Results file size: $file_size bytes"
             
             if [ "$file_size" -lt 10 ]; then
@@ -325,20 +325,20 @@ jobs:
             
             # Debug: Show structure of results
             echo "📋 Results structure:"
-            jq keys checkov-results/results.json 2>/dev/null || {
+            jq keys ./checkov-results.json 2>/dev/null || {
               echo "⚠️ Results file is not valid JSON, trying to parse anyway..."
-              cat checkov-results/results.json | head -10
+              cat ./checkov-results.json | head -10
             }
             
             # Extract results with better error handling
-            failed_checks=$(jq '.results.failed_checks | length' checkov-results/results.json 2>/dev/null || echo "0")
-            passed_checks=$(jq '.results.passed_checks | length' checkov-results/results.json 2>/dev/null || echo "0")
+            failed_checks=$(jq '.failed' ./checkov-results.json 2>/dev/null || echo "0")
+            passed_checks=$(jq '.passed' ./checkov-results.json 2>/dev/null || echo "0")
             
-            # If jq parsing failed, try alternative parsing
+            # If using older format, try alternative parsing
             if [ "$failed_checks" = "null" ] || [ "$passed_checks" = "null" ]; then
               echo "🔄 Alternative parsing attempt..."
-              failed_checks=$(jq 'if has("results") then .results.failed_checks | length else 0 end' checkov-results/results.json 2>/dev/null || echo "0")
-              passed_checks=$(jq 'if has("results") then .results.passed_checks | length else 0 end' checkov-results/results.json 2>/dev/null || echo "0")
+              failed_checks=$(jq 'if has("results") then .results.failed_checks | length else 0 end' ./checkov-results.json 2>/dev/null || echo "0")
+              passed_checks=$(jq 'if has("results") then .results.passed_checks | length else 0 end' ./checkov-results.json 2>/dev/null || echo "0")
             fi
             
             echo "🔍 Security scan completed: $failed_checks failed, $passed_checks passed"
@@ -351,7 +351,7 @@ jobs:
               echo "scan_message=⚠️ Security issues found ($failed_checks)" >> $GITHUB_OUTPUT
               
               # Extract critical/high severity issues for detailed reporting
-              critical_high_issues=$(jq -r '.results.failed_checks[]? | select(.severity == "CRITICAL" or .severity == "HIGH") | "\(.check_id): \(.check_name)"' checkov-results/results.json 2>/dev/null | head -10)
+              critical_high_issues=$(jq -r '.results.failed_checks[]? | select(.severity == "CRITICAL" or .severity == "HIGH") | "\(.check_id): \(.check_name)"' ./checkov-results.json 2>/dev/null | head -10)
               if [ -n "$critical_high_issues" ]; then
                 echo "critical_issues<<EOF" >> $GITHUB_OUTPUT
                 echo "$critical_high_issues" >> $GITHUB_OUTPUT
@@ -363,7 +363,7 @@ jobs:
             fi
           else
             echo "❌ Checkov results file not found after scan"
-            ls -la checkov-results/ || echo "Results directory not found"
+            ls -la checkov-* 2>/dev/null || echo "No checkov files found"
             echo "scan_status=skipped" >> $GITHUB_OUTPUT
             echo "scan_message=⚠️ Security scan could not generate results" >> $GITHUB_OUTPUT
             echo "failed_checks=0" >> $GITHUB_OUTPUT
@@ -864,7 +864,8 @@ jobs:
             source-repo/plans/
             source-repo/logs/
             source-repo/opa-result.txt
-            source-repo/checkov-results/
+            source-repo/checkov-results.json
+            source-repo/checkov-*.json
             source-repo/*.log
 
   # =============================================================================
