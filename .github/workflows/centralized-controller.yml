@@ -521,24 +521,8 @@ jobs:
               comment += `⚠️ **Status**: SKIPPED - No successful plans for validation\n\n`;
             }
             
-            // Security scan results
-            const securityStatus = '${{ steps.security.outputs.scan_status }}';
-            const failedChecks = '${{ steps.security.outputs.failed_checks }}';
-            const passedChecks = '${{ steps.security.outputs.passed_checks }}';
-            
-            comment += `### 🛡️ OPA Validation\n`;
-            if (securityStatus === 'passed') {
-              comment += `✅ **Status**: PASSED - No security issues\n`;
-              comment += `- **Checks**: ${passedChecks} passed\n\n`;
-            } else if (securityStatus === 'warning') {
-              comment += `⚠️ **Status**: ISSUES FOUND\n`;
-              comment += `- **Failed Checks**: ${failedChecks}\n`;
-              comment += `- **Passed Checks**: ${passedChecks}\n\n`;
-            } else if (securityStatus === 'skipped') {
-              comment += `⚠️ **Status**: SKIPPED - Could not run security scan\n\n`;
-            } else {
-              comment += `ℹ️ **Status**: Security scan not run\n\n`;
-            }
+            // Security scan results - REMOVED (No Checkov anymore)
+            // Only OPA validation is used now
             
             comment += `\n---\n`;
             comment += `🤖 *Centralized Controller* | `;
