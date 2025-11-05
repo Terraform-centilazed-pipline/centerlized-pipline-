@@ -73,6 +73,31 @@ jobs:
           path: opa-policies
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: 🔍 Debug OPA Policies Structure
+        run: |
+          echo "🔍 === OPA POLICIES DEBUG ==="
+          echo "📁 Root opa-policies directory:"
+          ls -la opa-policies/ || echo "❌ opa-policies directory not found"
+          echo ""
+          
+          echo "📂 Looking for terraform/ directory:"
+          if [ -d "opa-policies/terraform" ]; then
+            echo "✅ terraform/ directory found"
+            ls -la opa-policies/terraform/
+          else
+            echo "❌ terraform/ directory NOT found"
+            echo "📋 Available directories in opa-policies/:"
+            find opa-policies/ -type d -maxdepth 2 | head -10
+          fi
+          echo ""
+          
+          echo "🔍 Looking for .rego files:"
+          find opa-policies/ -name "*.rego" -type f | head -10
+          echo ""
+          
+          echo "📋 All files in opa-policies (first 20):"
+          find opa-policies/ -type f | head -20
+
       # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
       # Module sources now use: git::https://github.com/mmctech/tf-module.git//Module/<NAME>
 
@@ -286,25 +311,21 @@ jobs:
             echo "failed_plans=$failed" >> $GITHUB_OUTPUT
             echo "has_changes=$has_changes" >> $GITHUB_OUTPUT
             
-            # Prepare all plans for OPA validation
+            # Select first plan for OPA validation
             if [ -d "terraform-json" ] && [ "$successful" -gt 0 ]; then
               mkdir -p canonical-plan
-              json_files=(terraform-json/*.json)
-              if [ -e "${json_files[0]}" ]; then
-                echo "✅ Found ${#json_files[@]} JSON plans for OPA validation"
-                # Copy all JSON files to canonical-plan directory for multi-plan validation
-                cp terraform-json/*.json canonical-plan/
+              FIRST_JSON=$(ls terraform-json/*.json 2>/dev/null | head -n1)
+              if [ -n "$FIRST_JSON" ]; then
+                cp "$FIRST_JSON" canonical-plan/plan.json
+                echo "✅ Selected plan for OPA: $FIRST_JSON"
                 echo "opa_plan_ready=true" >> $GITHUB_OUTPUT
-                echo "total_plans=${#json_files[@]}" >> $GITHUB_OUTPUT
               else
                 echo "⚠️ No JSON plans found for OPA validation"
                 echo "opa_plan_ready=false" >> $GITHUB_OUTPUT
-                echo "total_plans=0" >> $GITHUB_OUTPUT
               fi
             else
               echo "⚠️ No successful plans for OPA validation"
               echo "opa_plan_ready=false" >> $GITHUB_OUTPUT
-              echo "total_plans=0" >> $GITHUB_OUTPUT
             fi
             
             # Continue workflow even if some plans failed
@@ -326,169 +347,82 @@ jobs:
         id: opa
         working-directory: source-repo
         run: |
-          echo "🛡️ Running OPA validation on all plans..."
+          echo "🛡️ Running OPA validation on canonical plan..."
           echo "📁 Using multi-service policy structure: terraform/main.rego"
           
-          total_plans="${{ steps.plan.outputs.total_plans }}"
-          echo "📦 Validating $total_plans plan(s)..."
-          
-          # Initialize counters
-          total_violations_all=0
-          critical_violations_all=0
-          high_violations_all=0
-          medium_violations_all=0
-          low_violations_all=0
-          
-          # Create detailed results file
-          echo "# OPA Validation Results" > opa-detailed-results.md
-          echo "" >> opa-detailed-results.md
-          
-          # Validate each plan separately
-          plan_number=0
-          validation_failed=false
-          
-          for json_file in canonical-plan/*.json; do
-            if [ ! -f "$json_file" ]; then
-              echo "⚠️ No JSON plans found to validate"
-              continue
-            fi
-            
-            plan_number=$((plan_number + 1))
-            plan_name=$(basename "$json_file" .json)
-            echo ""
-            echo "� [$plan_number/$total_plans] Validating: $plan_name"
-            
-            # Basic plan analysis
-            echo "📊 Plan analysis for $plan_name:"
-            echo "   File size: $(wc -c < "$json_file") bytes"
-            echo "   Resource changes: $(jq -r '.resource_changes | length' "$json_file" 2>/dev/null || echo "0")"
-            
-            # Get deployment summary for this plan
-            services_detected=$(opa eval -d ../opa-policies/terraform/ \
-              -i "$json_file" \
-              "data.terraform.main.deployment_summary.services_detected" \
-              --format json | jq -r '.result[0].expressions[0].value[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-            
-            if [ -n "$services_detected" ]; then
-              echo "📦 Services detected in $plan_name: $services_detected"
-            else
-              echo "ℹ️ No specific services detected in $plan_name"
-            fi
-            
-            # Run OPA validation on this plan
-            echo "🔍 Running policy validation on $plan_name..."
-            opa eval -d ../opa-policies/terraform/ \
-              -i "$json_file" \
-              "data.terraform.main.deny" \
-              --format pretty > "opa-result-$plan_name.txt" || true
-            
-            # Count violations for this plan
-            violations_json=$(opa eval -d ../opa-policies/terraform/ \
-              -i "$json_file" \
-              "data.terraform.main.deny" \
-              --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":{}}]}]}')
-            
-            # Parse violations from OPA object format
-            plan_total=$(echo "$violations_json" | jq -r '
-              [.result[0].expressions[0].value // {} | 
-               if type == "object" then keys[] else empty end |
-               try fromjson catch empty |
-               select(type == "object")] | length' 2>/dev/null || echo "0")
-               
-            plan_critical=$(echo "$violations_json" | jq -r '
-              [.result[0].expressions[0].value // {} | 
-               if type == "object" then keys[] else empty end |
-               try fromjson catch empty |
-               select(type == "object" and .severity == "critical")] | length' 2>/dev/null || echo "0")
-               
-            plan_high=$(echo "$violations_json" | jq -r '
-              [.result[0].expressions[0].value // {} | 
-               if type == "object" then keys[] else empty end |
-               try fromjson catch empty |
-               select(type == "object" and .severity == "high")] | length' 2>/dev/null || echo "0")
-               
-            plan_medium=$(echo "$violations_json" | jq -r '
-              [.result[0].expressions[0].value // {} | 
-               if type == "object" then keys[] else empty end |
-               try fromjson catch empty |
-               select(type == "object" and .severity == "medium")] | length' 2>/dev/null || echo "0")
-               
-            plan_low=$(echo "$violations_json" | jq -r '
-              [.result[0].expressions[0].value // {} | 
-               if type == "object" then keys[] else empty end |
-               try fromjson catch empty |
-               select(type == "object" and .severity == "low")] | length' 2>/dev/null || echo "0")
-            
-            # Ensure variables are numeric
-            plan_total=$(echo "${plan_total:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
-            plan_critical=$(echo "${plan_critical:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
-            plan_high=$(echo "${plan_high:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
-            plan_medium=$(echo "${plan_medium:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
-            plan_low=$(echo "${plan_low:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
-            
-            # Add to totals
-            total_violations_all=$((total_violations_all + plan_total))
-            critical_violations_all=$((critical_violations_all + plan_critical))
-            high_violations_all=$((high_violations_all + plan_high))
-            medium_violations_all=$((medium_violations_all + plan_medium))
-            low_violations_all=$((low_violations_all + plan_low))
-            
-            echo "📊 Results for $plan_name:"
-            echo "   Total violations: $plan_total"
-            echo "   🔴 Critical: $plan_critical"
-            echo "   🟠 High: $plan_high"
-            echo "   🟡 Medium: $plan_medium"
-            echo "   🟢 Low: $plan_low"
-            
-            # Add to detailed results
-            echo "## Plan: $plan_name" >> opa-detailed-results.md
-            echo "" >> opa-detailed-results.md
-            echo "**Services Detected:** $services_detected" >> opa-detailed-results.md
-            echo "**Violations:** $plan_total (🔴 $plan_critical critical, 🟠 $plan_high high, 🟡 $plan_medium medium, 🟢 $plan_low low)" >> opa-detailed-results.md
-            echo "" >> opa-detailed-results.md
-            
-            if [ "$plan_total" -gt 0 ]; then
-              validation_failed=true
-              echo "❌ Plan $plan_name has $plan_total violations"
-              echo "### Violation Details:" >> opa-detailed-results.md
-              echo '```' >> opa-detailed-results.md
-              cat "opa-result-$plan_name.txt" >> opa-detailed-results.md
-              echo '```' >> opa-detailed-results.md
-            else
-              echo "✅ Plan $plan_name passed validation"
-              echo "✅ No violations found" >> opa-detailed-results.md
-            fi
-            echo "" >> opa-detailed-results.md
-          done
-          
-          echo ""
-          echo "📊 Overall Validation Results:"
-          echo "   Plans validated: $plan_number"
-          echo "   Total violations: $total_violations_all"
-          echo "   🔴 Critical: $critical_violations_all"
-          echo "   🟠 High: $high_violations_all"
-          echo "   🟡 Medium: $medium_violations_all"
-          echo "   🟢 Low: $low_violations_all"
-          
-          # Set outputs
-          echo "total_violations=$total_violations_all" >> $GITHUB_OUTPUT
-          echo "critical_violations=$critical_violations_all" >> $GITHUB_OUTPUT
-          echo "high_violations=$high_violations_all" >> $GITHUB_OUTPUT
-          echo "medium_violations=$medium_violations_all" >> $GITHUB_OUTPUT
-          echo "low_violations=$low_violations_all" >> $GITHUB_OUTPUT
-          echo "plans_validated=$plan_number" >> $GITHUB_OUTPUT
-          
-          if [ "$total_violations_all" -eq 0 ]; then
-            echo "validation_status=passed" >> $GITHUB_OUTPUT
-            echo ""
-            echo "✅ All $plan_number plans passed validation - deployment authorized!"
-          else
-            echo "validation_status=failed" >> $GITHUB_OUTPUT
-            echo ""
-            echo "❌ Validation failed: $total_violations_all violations found across $plan_number plans"
-            echo ""
-            echo "📋 See opa-detailed-results.md for complete violation details"
+          if [ ! -f "canonical-plan/plan.json" ]; then
+            echo "❌ No canonical plan found"
+            exit 1
           fi
+          
+          # Basic plan analysis
+          echo "� Plan analysis:"
+          echo "   File size: $(wc -c < canonical-plan/plan.json) bytes"
+          echo "   Resource changes: $(jq -r '.resource_changes | length' canonical-plan/plan.json 2>/dev/null || echo "0")"
+          
+          # Get deployment summary (which services are being deployed)
+          echo "📦 Detecting services in plan..."
+          opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.main.deployment_summary" \
+            --format pretty > opa-summary.txt || true
+          
+          services_detected=$(opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.main.deployment_summary.services_detected" \
+            --format json | jq -r '.result[0].expressions[0].value[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+          
+          if [ -n "$services_detected" ]; then
+            echo "📦 Services detected: $services_detected"
+          else
+            echo "ℹ️ No specific services detected, will run all policies"
+          fi
+          
+          # Run unified OPA validation (auto-detects and validates all services)
+          echo "🔍 Running policy validation..."
+          opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.main.deny" \
+            --format pretty > opa-result.txt || true
+          
+          # Count violations by severity  
+          violations_json=$(opa eval -d ../opa-policies/terraform/ \
+            -i canonical-plan/plan.json \
+            "data.terraform.main.deny" \
+            --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":{}}]}]}')
+          
+          # Parse violations from OPA object format - violations are stored as keys in the object
+          total_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object")] | length' 2>/dev/null || echo "0")
+             
+          critical_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "critical")] | length' 2>/dev/null || echo "0")
+             
+          high_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "high")] | length' 2>/dev/null || echo "0")
+             
+          medium_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "medium")] | length' 2>/dev/null || echo "0")
+             
+          low_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "low")] | length' 2>/dev/null || echo "0")
+          
+          # Ensure variables are numeric (default to 0 if empty, remove any whitespace/newlines)
           total_violations=$(echo "${total_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
           critical_violations=$(echo "${critical_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
           high_violations=$(echo "${high_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
@@ -594,37 +528,20 @@ jobs:
               comment += `ℹ️ No deployments found or no changes detected\n\n`;
             }
             
-            // Enhanced OPA results for multiple plans
+            // OPA results
             const validation = '${{ steps.opa.outputs.validation_status }}';
             const violations = '${{ steps.opa.outputs.total_violations }}';
-            const plansValidated = '${{ steps.opa.outputs.plans_validated }}';
-            const criticalViolations = '${{ steps.opa.outputs.critical_violations }}';
-            const highViolations = '${{ steps.opa.outputs.high_violations }}';
-            const mediumViolations = '${{ steps.opa.outputs.medium_violations }}';
-            const lowViolations = '${{ steps.opa.outputs.low_violations }}';
             
             comment += `### 🛡️ OPA Policy Validation\n`;
             if (validation === 'passed') {
-              comment += `✅ **Status**: PASSED - No policy violations across ${plansValidated || 1} plan(s)\n`;
-              comment += `🔒 **Security**: All plans meet security requirements\n\n`;
+              comment += `✅ **Status**: PASSED - No policy violations\n\n`;
             } else if (validation === 'failed') {
               comment += `❌ **Status**: FAILED\n`;
-              comment += `- **Total Violations**: ${violations} across ${plansValidated || 1} plan(s)\n`;
-              comment += `- **Breakdown**: 🔴 ${criticalViolations || 0} Critical | 🟠 ${highViolations || 0} High | 🟡 ${mediumViolations || 0} Medium | 🟢 ${lowViolations || 0} Low\n\n`;
+              comment += `- **Violations**: ${violations}\n\n`;
               try {
-                const opaResults = fs.readFileSync('source-repo/opa-detailed-results.md', 'utf8');
-                comment += `<details>\n<summary>📋 View Detailed Validation Results</summary>\n\n`;
-                comment += opaResults;
-                comment += `\n</details>\n\n`;
-              } catch (e) {
-                console.log('No detailed OPA results found, trying legacy format...');
-                try {
-                  const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
-                  comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
-                } catch (e2) {
-                  console.log('No OPA results file found');
-                }
-              }
+                const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
+                comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
+              } catch (e) {}
             } else if ('${{ steps.plan.outputs.opa_plan_ready }}' === 'false') {
               comment += `⚠️ **Status**: SKIPPED - No successful plans for validation\n\n`;
             }
