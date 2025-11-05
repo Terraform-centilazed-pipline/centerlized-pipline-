@@ -345,34 +345,39 @@ jobs:
             
             if [ -n "$full_paths" ]; then
               echo "🎯 Found .tfvars files for scan: $full_paths"
-              echo "📁 Scanning centralized controller Terraform configuration..."
+              echo "📁 Scanning controller .tf files with specific .tfvars values..."
               
-              # Checkov needs to scan the actual Terraform files (.tf), not .tfvars
-              # The controller's main.tf will reference these .tfvars during plan/apply
-              echo "🔍 Running Checkov scan on centralized controller configuration..."
-              checkov --framework terraform \
-                --directory ../controller \
-                --output json \
-                --output-file-path checkov-results \
-                --soft-fail \
-                --external-checks-dir /dev/null || {
-                echo "⚠️ Checkov scan encountered issues, checking for partial results..."
-              }
+              # Checkov correct approach: scan .tf files with --var-file for specific .tfvars
+              echo "🔍 Running Checkov on controller configuration with variable files..."
               
-              # Also scan the source repository for any .tf files if they exist
-              tf_files_in_source=$(find . -name "*.tf" | head -5)
-              if [ -n "$tf_files_in_source" ]; then
-                echo "🔍 Found .tf files in source repo, scanning those too..."
+              # Build var-file arguments for each tfvars file
+              var_file_args=""
+              for file in $full_paths; do
+                if [[ "$file" != "null" ]] && [ -n "$file" ] && [ -f "$file" ]; then
+                  # Convert relative path to absolute path
+                  abs_path="$(pwd)/$file"
+                  var_file_args="$var_file_args --var-file=$abs_path"
+                  echo "📋 Adding var file: $abs_path"
+                fi
+              done
+              
+              if [ -n "$var_file_args" ]; then
+                echo "🔍 Running: checkov -d ../controller $var_file_args"
                 checkov --framework terraform \
-                  --directory . \
+                  --directory ../controller \
+                  $var_file_args \
                   --output json \
-                  --output-file-path checkov-results-source \
-                  --soft-fail \
-                  --external-checks-dir /dev/null || {
-                  echo "⚠️ Source repo scan had issues, continuing with controller scan..."
+                  --output-file-path checkov-results \
+                  --soft-fail || {
+                  echo "⚠️ Checkov scan encountered issues, checking for partial results..."
                 }
               else
-                echo "ℹ️ No .tf files in source repo - scanning controller only"
+                echo "⚠️ No valid .tfvars files found for variable scanning"
+                echo "scan_status=skipped" >> $GITHUB_OUTPUT
+                echo "scan_message=⚠️ No valid .tfvars files found" >> $GITHUB_OUTPUT
+                echo "failed_checks=0" >> $GITHUB_OUTPUT
+                echo "passed_checks=0" >> $GITHUB_OUTPUT
+                exit 0
               fi
             else
               echo "ℹ️ No valid .tfvars files in discovered deployments"
