@@ -313,11 +313,14 @@ jobs:
           # Create results directory
           mkdir -p checkov-results
           
-          # Use discovered deployments from earlier step
-          if [ ! -f "source-repo/deployments.json" ]; then
+          # Use discovered deployments from earlier step  
+          if [ ! -f "deployments.json" ]; then
             echo "❌ No deployments.json found - skipping security scan"
-            echo "📁 Debug - checking for deployments.json:"
-            ls -la source-repo/ | grep deployments || echo "No deployments.json file found"
+            echo "📁 Debug - checking for deployments.json in current directory:"
+            ls -la . | grep deployments || echo "No deployments.json file found"
+            echo "📁 Current working directory: $(pwd)"
+            echo "📁 Available files:"
+            ls -la . | head -10
             echo "scan_status=skipped" >> $GITHUB_OUTPUT
             echo "scan_message=ℹ️ No deployments discovered" >> $GITHUB_OUTPUT
             echo "failed_checks=0" >> $GITHUB_OUTPUT
@@ -326,17 +329,17 @@ jobs:
           fi
           
           echo "✅ Found deployments.json, extracting tfvars files..."
-          cat source-repo/deployments.json | jq '.'
+          cat deployments.json | jq '.'
           
           # Extract all tfvars files from discovered deployments
-          tfvars_files=$(jq -r '.deployments[]?.tfvars_file // .deployments[]?.file' source-repo/deployments.json | tr '\n' ' ')
+          tfvars_files=$(jq -r '.deployments[]?.tfvars_file // .deployments[]?.file' deployments.json | tr '\n' ' ')
           
           if [ -n "$tfvars_files" ] && [ "$tfvars_files" != " " ]; then
-            # Convert relative paths to full paths from source-repo
+            # Convert relative paths to full paths (we're already in source-repo directory)
             full_paths=""
             for file in $tfvars_files; do
               if [[ "$file" != "null" ]] && [ -n "$file" ]; then
-                full_paths="$full_paths source-repo/$file"
+                full_paths="$full_paths ./$file"
               fi
             done
             
