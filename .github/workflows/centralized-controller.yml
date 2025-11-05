@@ -258,24 +258,16 @@ jobs:
             jq -r '.result[0].expressions[0].value.violation_details[]?' opa-validation.json > opa-result.txt 2>/dev/null || echo "No detailed violation info available" > opa-result.txt
           fi
           
-          # Determine validation status and actions
+          # Determine validation status - all violations require manual review
           if [ "$violations" -eq 0 ]; then
             echo "validation_status=passed" >> $GITHUB_OUTPUT
-            echo "requires_approval=false" >> $GITHUB_OUTPUT
-            echo "auto_close=false" >> $GITHUB_OUTPUT
+            echo "requires_review=false" >> $GITHUB_OUTPUT
             echo "✅ All policies passed!"
-          elif [ "$POLICY_TYPE" = "project-specific" ]; then
-            # Project-specific policies failed - require approval
-            echo "validation_status=failed" >> $GITHUB_OUTPUT
-            echo "requires_approval=true" >> $GITHUB_OUTPUT
-            echo "auto_close=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Project-specific policy violations found - manual approval required"
           else
-            # Default policies failed - auto-close PR
+            # All policy violations require manual review before merge
             echo "validation_status=failed" >> $GITHUB_OUTPUT
-            echo "requires_approval=false" >> $GITHUB_OUTPUT
-            echo "auto_close=true" >> $GITHUB_OUTPUT
-            echo "❌ Default policy violations found - PR will be auto-closed"
+            echo "requires_review=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Policy violations found - manual review required before merge"
           fi
 
       - name: 💬 Enhanced PR Comments
@@ -321,12 +313,17 @@ jobs:
             const violations = '${{ steps.opa.outputs.total_violations }}' || '0';
             const policyType = '${{ steps.opa.outputs.policy_type }}' || 'unknown';
             const projectPolicyFound = '${{ steps.opa.outputs.project_policy_found }}';
-            const requiresApproval = '${{ steps.opa.outputs.requires_approval }}';
-            const autoClose = '${{ steps.opa.outputs.auto_close }}';
+            const requiresReview = '${{ steps.opa.outputs.requires_review }}';
             
             comment += `### 🛡️ Policy Validation (${policyType})\n`;
             if (validation === 'passed') {
               comment += `✅ **All policies passed!**\n`;
+              comment += `\n### ✅ Ready for Manual Merge\n`;
+              comment += `**This PR can be safely merged manually** after team review.\n\n`;
+              comment += `**Next Steps:**\n`;
+              comment += `1. Team review and approval\n`;
+              comment += `2. Manual merge to trigger deployment\n`;
+              comment += `3. Monitor apply process\n\n`;
             } else {
               comment += `❌ **${violations} violations** detected using **${policyType}** policies\n`;
               
@@ -334,18 +331,15 @@ jobs:
                 comment += `> 💡 No project-specific policies found, using default validation rules\n`;
               }
               
-              // Action Required Section
-              if (requiresApproval === 'true') {
-                comment += `\n### 🔐 Manual Approval Required\n`;
-                comment += `**Project-specific policy violations detected.** This PR requires manual review.\n\n`;
-                comment += `**Next Steps:**\n`;
-                comment += `1. Review violations above\n`;
-                comment += `2. Fix violations OR get security team approval\n`;
-                comment += `3. Add comment \`@terrateam approve-policy\` to override\n\n`;
-                comment += `> ⚠️ **Security Notice:** Project policies enforce your organization's specific requirements.\n`;
-              } else if (autoClose === 'true') {
-                comment += `\n### ❌ Auto-Closing PR\n`;
-                comment += `**Default policy violations detected.** This PR will be automatically closed.\n\n`;
+              comment += `\n### � Manual Review Required\n`;
+              comment += `**Policy violations must be resolved before merge.**\n\n`;
+              comment += `**Next Steps:**\n`;
+              comment += `1. ✏️ Fix all policy violations listed above\n`;
+              comment += `2. 🔄 Push changes to update this PR\n`;
+              comment += `3. ⏳ Wait for re-validation\n`;
+              comment += `4. ✅ Manual merge after all checks pass\n\n`;
+              comment += `> ⚠️ **Important:** Do not merge until all violations are resolved!\n`;
+            }
                 comment += `**Why?** Default policies represent mandatory security requirements.\n`;
                 comment += `**Fix Required:** Address all violations and reopen a new PR.\n`;
               }
@@ -359,72 +353,88 @@ jobs:
               body: comment
             });
 
-      - name: ❌ Auto-Close PR for Default Policy Violations
-        if: steps.opa.outputs.auto_close == 'true'
+      - name: 🚫 Policy Violation Summary
+        if: steps.opa.outputs.validation_status == 'failed'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            console.log('� Auto-closing PR due to default policy violations');
+            const violations = '${{ steps.opa.outputs.total_violations }}';
+            const policyType = '${{ steps.opa.outputs.policy_type }}';
             
-            await github.rest.pulls.update({
-              owner: '${{ github.event.client_payload.source_owner }}',
-              repo: '${{ github.event.client_payload.source_repo }}',
-              pull_number: ${{ github.event.client_payload.pr_number }},
-              state: 'closed'
-            });
-            
-            console.log('✅ PR closed successfully');
+            console.log(`⚠️ Policy validation failed: ${violations} violations found using ${policyType} policies`);
+            console.log('📋 Manual review required before merge');
 
-      - name: 🔐 Add Approval Label for Project Policy Violations
-        if: steps.opa.outputs.requires_approval == 'true'
+      - name: 🏷️ Label PR Based on Validation Results
+        if: always() && steps.discover.outputs.has_deployments == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            console.log('🏷️ Adding approval required label');
+            const prNumber = '${{ github.event.client_payload.pr_number }}';
+            const validation = '${{ steps.opa.outputs.validation_status }}';
+            const violations = '${{ steps.opa.outputs.total_violations }}' || '0';
+            const scanStatus = '${{ steps.security.outputs.scan_status }}';
+            const criticalIssues = '${{ steps.security.outputs.critical_issues }}' || '0';
             
-            await github.rest.issues.addLabels({
-              owner: '${{ github.event.client_payload.source_owner }}',
-              repo: '${{ github.event.client_payload.source_repo }}',
-              issue_number: ${{ github.event.client_payload.pr_number }},
-              labels: ['policy-approval-required', 'security-review']
-            });
+            console.log('🏷️ Adding appropriate labels based on validation results');
             
-            console.log('✅ Labels added successfully');
-
-      - name: 🔒 Block Auto-Merge for Project Policy Violations
-        if: steps.opa.outputs.requires_approval == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          script: |
-            console.log('🔒 Blocking auto-merge until approval received');
+            // Remove any existing status labels first
+            try {
+              const existingLabels = await github.rest.issues.listLabelsOnIssue({
+                owner: '${{ github.event.client_payload.source_owner }}',
+                repo: '${{ github.event.client_payload.source_repo }}',
+                issue_number: prNumber
+              });
+              
+              const statusLabels = existingLabels.data.filter(label => 
+                label.name.includes('validation') || 
+                label.name.includes('security') ||
+                label.name.includes('ready') ||
+                label.name.includes('blocked')
+              );
+              
+              for (const label of statusLabels) {
+                await github.rest.issues.removeLabel({
+                  owner: '${{ github.event.client_payload.source_owner }}',
+                  repo: '${{ github.event.client_payload.source_repo }}',
+                  issue_number: prNumber,
+                  name: label.name
+                });
+              }
+            } catch (error) {
+              console.log('Note: Could not remove existing labels:', error.message);
+            }
             
-            const approvalMessage = [
-              '## 🔐 Manual Approval Required',
-              '',
-              'Project-specific policy violations detected. This PR is blocked until approved.',
-              '',
-              '**👥 Approval Commands:** (Engineering team only)',
-              '- Comment `@terrateam approve-policy` to approve and allow merge',
-              '- Comment `@terrateam deny-policy` to block this PR',
-              '',
-              '**✅ Approved by:** Engineering team members: engineering-lead, devops-manager, security-architect',
-              '',
-              '**🔍 Status:** ⏳ Waiting for approval...',
-              '',
-              '> 💡 **Note:** Default policy violations auto-close PRs. Project policy violations require manual approval.'
-            ].join('\n');
+            // Add appropriate new labels
+            const labelsToAdd = [];
+            
+            if (validation === 'passed' && scanStatus !== 'failed') {
+              labelsToAdd.push('validation-passed', 'ready-for-manual-merge');
+            } else {
+              labelsToAdd.push('validation-failed', 'blocked-needs-fixes');
+              
+              if (parseInt(violations) > 0) {
+                labelsToAdd.push('policy-violations');
+              }
+              
+              if (parseInt(criticalIssues) > 0) {
+                labelsToAdd.push('security-critical');
+              }
+            }
+            
+            if (labelsToAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: '${{ github.event.client_payload.source_owner }}',
+                repo: '${{ github.event.client_payload.source_repo }}',
+                issue_number: prNumber,
+                labels: labelsToAdd
+              });
+              
+              console.log(`✅ Added labels: ${labelsToAdd.join(', ')}`);
+            }
 
-            await github.rest.issues.createComment({
-              owner: '${{ github.event.client_payload.source_owner }}',
-              repo: '${{ github.event.client_payload.source_repo }}',
-              issue_number: '${{ github.event.client_payload.pr_number }}',
-              body: approvalMessage
-            });
-
-      - name: 🚨 Critical Alert
+      - name: � Critical Alert
         if: steps.security.outputs.scan_status == 'failed' && steps.security.outputs.critical_issues > 0
         uses: actions/github-script@v7
         with:
@@ -437,7 +447,7 @@ jobs:
             const alertComment = `🚨 **URGENT SECURITY ALERT** 🚨\n\n` +
               `@${prAuthor} - **${criticalCount} Critical Security Issues** detected!\n\n` +
               `⛔ **Action Required**: Please fix these issues before proceeding.\n\n` +
-              `🔒 *Automated Security Alert*`;
+              `� *Automated Security Alert*`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
@@ -446,93 +456,36 @@ jobs:
               body: alertComment
             });
 
-      - name: 🔍 Check Approval Status (for Project Policy Violations)
-        if: steps.opa.outputs.requires_approval == 'true'
-        id: approval_check
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          script: |
-            // 🔐 CONFIGURE YOUR APPROVERS HERE
-            // Replace these usernames with your actual GitHub usernames
-            const approvers = [
-              'pragadeeswarpa',         // Your GitHub username
-              // Add your team members' actual GitHub usernames:
-              // 'teammate1-github-username',
-              // 'teammate2-github-username',
-            ];
-            
-            console.log(`� Configured approvers: ${approvers.join(', ')}`);
-            console.log('🔍 Checking for approval comments...');
-            
-            const comments = await github.rest.issues.listComments({
-              owner: '${{ github.event.client_payload.source_owner }}',
-              repo: '${{ github.event.client_payload.source_repo }}',
-              issue_number: '${{ github.event.client_payload.pr_number }}'
-            });
-            
-            let approved = false;
-            let approver = null;
-            
-            // Check latest comments first
-            for (const comment of comments.data.reverse()) {
-              const commenter = comment.user.login;
-              const body = comment.body.trim();
-              
-              if (approvers.includes(commenter) && body.includes('@terrateam approve-policy')) {
-                approved = true;
-                approver = commenter;
-                console.log(`✅ Found approval from ${commenter}`);
-                break;
-              }
-            }
-            
-            core.setOutput('approved', approved);
-            core.setOutput('approver', approver);
-            
-            if (approved) {
-              // Add approval confirmation comment
-              const approvalMessage = [
-                `✅ **POLICY APPROVED** by @${approver}`,
-                '',
-                '**Status:** Ready for merge and deployment',
-                '**Next Steps:** This PR will now auto-merge',
-                '',
-                '🚀 Deployment will proceed automatically after merge'
-              ].join('\n');
-              
-              await github.rest.issues.createComment({
-                owner: '${{ github.event.client_payload.source_owner }}',
-                repo: '${{ github.event.client_payload.source_repo }}',
-                issue_number: '${{ github.event.client_payload.pr_number }}',
-                body: approvalMessage
-              });
-            }
-
-      - name: 🔀 Auto-merge
-        if: |
-          steps.opa.outputs.validation_status == 'passed' && 
-          steps.security.outputs.scan_status == 'passed' && 
-          (steps.opa.outputs.requires_approval != 'true' || steps.approval_check.outputs.approved == 'true')
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          script: |
-            try {
-              await github.rest.pulls.merge({
-                owner: '${{ github.event.client_payload.source_owner }}',
-                repo: '${{ github.event.client_payload.source_repo }}',
-                pull_number: ${{ github.event.client_payload.pr_number }},
-                commit_title: 'Auto-merge: Security and policy validation passed',
-                merge_method: 'squash'
-              });
-              console.log('✅ PR auto-merged successfully');
-            } catch (error) {
-              console.log('⚠️ Auto-merge failed:', error.message);
-            }
+      - name: � Final Validation Summary
+        if: always() && steps.discover.outputs.has_deployments == 'true'
+        run: |
+          echo "======================================"
+          echo "🎯 CENTRALIZED CONTROLLER SUMMARY"
+          echo "======================================"
+          echo "📁 Source: ${{ github.event.client_payload.source_repo }}"
+          echo "🔢 PR: #${{ github.event.client_payload.pr_number }}"
+          echo "👤 Author: ${{ github.event.client_payload.pr_author }}"
+          echo ""
+          echo "🛡️ VALIDATION RESULTS:"
+          echo "   Security Scan: ${{ steps.security.outputs.scan_status || 'not-run' }}"
+          echo "   Policy Check: ${{ steps.opa.outputs.validation_status || 'not-run' }}"
+          echo "   Violations: ${{ steps.opa.outputs.total_violations || '0' }}"
+          echo "   Critical Issues: ${{ steps.security.outputs.critical_issues || '0' }}"
+          echo ""
+          echo "🔧 NEXT STEPS:"
+          if [[ "${{ steps.opa.outputs.validation_status }}" == "passed" && "${{ steps.security.outputs.scan_status }}" != "failed" ]]; then
+            echo "   ✅ Ready for MANUAL MERGE"
+            echo "   ⚠️  No auto-merge - manual review required"
+            echo "   🚀 Manual merge will trigger apply process"
+          else
+            echo "   ❌ BLOCKED - Fix violations before merge"
+            echo "   📝 Check PR comments for details"
+            echo "   🔄 Push fixes to re-trigger validation"
+          fi
+          echo "======================================"
 
   # =============================================================================
-  # TERRAFORM APPLY JOB (Runs after successful merge)
+  # TERRAFORM APPLY JOB (Runs after manual merge)
   # =============================================================================
   terraform-apply:
     name: 🚀 Terraform Apply
@@ -583,6 +536,22 @@ jobs:
           curl -fsSL https://releases.hashicorp.com/terraform/${{ env.TERRAFORM_VERSION }}/terraform_${{ env.TERRAFORM_VERSION }}_linux_amd64.zip -o terraform.zip
           unzip terraform.zip && sudo mv terraform /usr/local/bin/
 
+      - name: Checkout OPA Policies
+        uses: actions/checkout@v4
+        with:
+          repository: Terraform-centilazed-pipline/OPA-Poclies
+          path: opa-policies
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: 🛠️ Setup OPA for Apply Validation
+        run: |
+          echo "🛠️ Installing OPA for apply-time validation..."
+          
+          # Setup OPA (with fallback)
+          curl -L -o opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static || \
+          curl -L -o opa https://github.com/open-policy-agent/opa/releases/download/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x opa && sudo mv opa /usr/local/bin/
+
       - name: 🔍 Discover Deployments
         id: discover
         working-directory: source-repo
@@ -599,14 +568,63 @@ jobs:
             echo "has_deployments=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 🚀 Terraform Apply
+      - name: 🛡️ Pre-Apply Policy Validation
         if: steps.discover.outputs.has_deployments == 'true'
+        id: pre_apply_validation
+        working-directory: source-repo
+        run: |
+          echo "🛡️ Running pre-apply policy validation..."
+          
+          # Generate new plan for current state validation
+          set +e
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py plan \
+            --deployments-json deployments.json --output-summary pre-apply-plan-results.json --debug --working-dir .
+          plan_exit_code=$?
+          set -e
+          
+          if [ $plan_exit_code -eq 0 ] && [ -f canonical-plan/plan.json ]; then
+            echo "✅ Plan generated successfully for pre-apply validation"
+            
+            # Run OPA validation on the fresh plan
+            opa eval -d "../opa-policies/terraform/" -i canonical-plan/plan.json \
+              "data.terraform.main.validate_plan" --format json > pre-apply-opa-validation.json
+            
+            # Extract results
+            violations=$(jq -r '.result[0].expressions[0].value.total_violations // 0' pre-apply-opa-validation.json)
+            critical=$(jq -r '.result[0].expressions[0].value.critical_violations // 0' pre-apply-opa-validation.json)
+            
+            echo "🔍 Pre-Apply Validation Results:"
+            echo "   Total Violations: $violations"
+            echo "   Critical: $critical"
+            
+            echo "violations=$violations" >> $GITHUB_OUTPUT
+            echo "critical_violations=$critical" >> $GITHUB_OUTPUT
+            
+            if [ "$violations" -gt 0 ]; then
+              echo "validation_status=failed" >> $GITHUB_OUTPUT
+              echo "❌ Policy violations detected - apply will be blocked"
+              # Save violation details for reporting
+              jq -r '.result[0].expressions[0].value.violations' pre-apply-opa-validation.json > pre-apply-violations.json 2>/dev/null || echo "{}" > pre-apply-violations.json
+            else
+              echo "validation_status=passed" >> $GITHUB_OUTPUT
+              echo "✅ All policies passed - apply can proceed"
+            fi
+          else
+            echo "validation_status=error" >> $GITHUB_OUTPUT
+            echo "❌ Could not generate plan for pre-apply validation"
+            echo "violations=0" >> $GITHUB_OUTPUT
+            echo "critical_violations=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🚀 Terraform Apply
+        if: steps.discover.outputs.has_deployments == 'true' && steps.pre_apply_validation.outputs.validation_status == 'passed'
         id: apply
         working-directory: source-repo
         env:
           TERRAFORM_DIR: ../controller
         run: |
           echo "🚀 Running terraform apply..."
+          echo "✅ Pre-apply validation passed - proceeding with apply"
           
           set +e
           python3 ../controller/scripts/terraform-deployment-orchestrator.py apply \
@@ -635,6 +653,17 @@ jobs:
           else
             echo "❌ No apply results found" && exit 1
           fi
+
+      - name: ❌ Apply Blocked by Policy Violations
+        if: steps.discover.outputs.has_deployments == 'true' && steps.pre_apply_validation.outputs.validation_status != 'passed'
+        run: |
+          echo "❌ APPLY BLOCKED - Policy violations detected"
+          echo "🔍 Violations: ${{ steps.pre_apply_validation.outputs.violations }}"
+          echo "🚨 Critical: ${{ steps.pre_apply_validation.outputs.critical_violations }}"
+          echo ""
+          echo "🛡️ Apply process halted for security compliance"
+          echo "📝 Fix violations in the source repository and retry"
+          exit 1
 
       - name: 💬 Post Apply Results
         if: always() && steps.discover.outputs.has_deployments == 'true'
