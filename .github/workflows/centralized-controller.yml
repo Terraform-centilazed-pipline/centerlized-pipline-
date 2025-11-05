@@ -62,7 +62,7 @@ jobs:
       - name: Checkout OPA Policies
         uses: actions/checkout@v4
         with:
-          repository: mmctech/mmctech-aws-tf-opa-polices 
+          repository: Terraform-centilazed-pipline/OPA-Poclies
           path: opa-policies
           token: ${{ steps.app-token.outputs.token }}
 
