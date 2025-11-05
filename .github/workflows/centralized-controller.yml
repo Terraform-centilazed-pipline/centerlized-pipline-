@@ -331,7 +331,7 @@ jobs:
                 comment += `> 💡 No project-specific policies found, using default validation rules\n`;
               }
               
-              comment += `\n### � Manual Review Required\n`;
+              comment += `\n### 🚫 Manual Review Required\n`;
               comment += `**Policy violations must be resolved before merge.**\n\n`;
               comment += `**Next Steps:**\n`;
               comment += `1. ✏️ Fix all policy violations listed above\n`;
@@ -339,10 +339,6 @@ jobs:
               comment += `3. ⏳ Wait for re-validation\n`;
               comment += `4. ✅ Manual merge after all checks pass\n\n`;
               comment += `> ⚠️ **Important:** Do not merge until all violations are resolved!\n`;
-            }
-                comment += `**Why?** Default policies represent mandatory security requirements.\n`;
-                comment += `**Fix Required:** Address all violations and reopen a new PR.\n`;
-              }
             }
             comment += `\n`;
             
@@ -434,7 +430,7 @@ jobs:
               console.log(`✅ Added labels: ${labelsToAdd.join(', ')}`);
             }
 
-      - name: � Critical Alert
+      - name: 🚨 Critical Alert
         if: steps.security.outputs.scan_status == 'failed' && steps.security.outputs.critical_issues > 0
         uses: actions/github-script@v7
         with:
@@ -447,7 +443,7 @@ jobs:
             const alertComment = `🚨 **URGENT SECURITY ALERT** 🚨\n\n` +
               `@${prAuthor} - **${criticalCount} Critical Security Issues** detected!\n\n` +
               `⛔ **Action Required**: Please fix these issues before proceeding.\n\n` +
-              `� *Automated Security Alert*`;
+              `🔒 *Automated Security Alert*`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
