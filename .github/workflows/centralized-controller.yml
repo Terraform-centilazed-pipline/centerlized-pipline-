@@ -249,12 +249,11 @@ jobs:
             
             core.setFailed('❌ Pre-deployment validation failed. PR closed.');
 
-      # ===== STEP 2.5: SECURITY SCAN WITH CHECKOV =====
-      - name: 🛡️ Security Scan with Checkov
-        if: (steps.discover.outputs.has_deployments == 'true') || (steps.discover-apply.outputs.has_deployments == 'true')
-        id: security
+      # ===== STEP 3: TERRAFORM PLAN (Only runs if pre-validation passed) =====
+      - name: 📋 Terraform Plan
+        if: steps.discover.outputs.has_deployments == 'true'
+        id: plan
         working-directory: source-repo
-        continue-on-error: true
         run: |
           echo "🛡️ Running Checkov security scan..."
           echo "📁 Working directory: $(pwd)"
