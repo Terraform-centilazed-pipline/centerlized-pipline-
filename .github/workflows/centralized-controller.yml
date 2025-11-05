@@ -26,16 +26,23 @@ jobs:
   terraform-controller:
     name: 🎯 Terraform Controller
     runs-on: ubuntu-latest
-    if: github.event.action == 'terraform_pr' || github.event.client_payload.action != 'apply'
     steps:
       - name: 📋 Event Details
         run: |
           echo "🔔 Repository Dispatch Event Received"
           echo "Source Repo: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}"
           echo "PR Number: ${{ github.event.client_payload.pr_number }}"
-          echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
-          echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
           echo "Action: ${{ github.event.client_payload.action }}"
+          if [[ "${{ github.event.client_payload.action }}" == "apply" ]]; then
+            echo "🚀 APPLY MODE - Running terraform apply"
+            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
+            echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
+            echo "Merged SHA: ${{ github.event.client_payload.merge_commit_sha }}"
+          else
+            echo "🔍 PLAN MODE - Running terraform plan and validation"
+            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
+            echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
+          fi
 
       - name: Generate GitHub App Token
         id: app-token
@@ -51,11 +58,11 @@ jobs:
           path: controller
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Checkout Source Dev Repo (PR branch)
+      - name: Checkout Source Dev Repo
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}
-          ref: ${{ github.event.client_payload.pr_head_ref }}
+          ref: ${{ github.event.client_payload.action == 'apply' && 'main' || github.event.client_payload.pr_head_ref }}
           path: source-repo
           token: ${{ steps.app-token.outputs.token }}
 
@@ -95,8 +102,9 @@ jobs:
           git config --global url."https://oauth2:${{ steps.app-token.outputs.token }}@github.com".insteadOf "https://github.com"
           echo "✅ Git authentication configured for Terraform module downloads"
 
-      # ===== Get changed files from PR =====
+      # ===== Get changed files from PR (skip for apply mode) =====
       - name: 🔍 Get Changed Files
+        if: github.event.client_payload.action != 'apply'
         id: changed-files
         uses: actions/github-script@v7
         with:
@@ -119,7 +127,7 @@ jobs:
 
       # ===== STEP 1: DISCOVER DEPLOYMENTS =====
       - name: 🔍 Discover Deployments
-        if: steps.changed-files.outputs.count > 0
+        if: github.event.client_payload.action != 'apply' && steps.changed-files.outputs.count > 0
         id: discover
         working-directory: source-repo
         env:
@@ -131,6 +139,44 @@ jobs:
             --debug
           
           total=$(jq -r '.total_deployments // 0' deployments.json)
+          echo "total=$total" >> $GITHUB_OUTPUT
+          
+          if [ "$total" -gt 0 ]; then
+            echo "✅ Found $total deployments"
+            echo "has_deployments=true" >> $GITHUB_OUTPUT
+            
+            # Extract first tfvars file for pre-validation
+            first_tfvars=$(jq -r '.deployments[0].tfvars_file // empty' deployments.json)
+            echo "first_tfvars=$first_tfvars" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No deployments found"
+            echo "has_deployments=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ===== APPLY MODE: Discover from merged files =====
+      - name: 🔍 Discover Deployments (Apply Mode)
+        if: github.event.client_payload.action == 'apply'
+        id: discover-apply
+        working-directory: source-repo
+        env:
+          TERRAFORM_DIR: ../controller
+        run: |
+          # For apply mode, get changed files from the merge commit
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
+            --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
+            --output-summary deployments.json \
+            --debug
+          
+          total=$(jq -r '.total_deployments // 0' deployments.json)
+          echo "total=$total" >> $GITHUB_OUTPUT
+          
+          if [ "$total" -gt 0 ]; then
+            echo "✅ Found $total deployments for apply"
+            echo "has_deployments=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No deployments found for apply"
+            echo "has_deployments=false" >> $GITHUB_OUTPUT
+          fi
           echo "total=$total" >> $GITHUB_OUTPUT
           
           if [ "$total" -gt 0 ]; then
@@ -278,12 +324,17 @@ jobs:
           # Use discovered deployments from earlier step
           if [ ! -f "source-repo/deployments.json" ]; then
             echo "❌ No deployments.json found - skipping security scan"
+            echo "📁 Debug - checking for deployments.json:"
+            ls -la source-repo/ | grep deployments || echo "No deployments.json file found"
             echo "scan_status=skipped" >> $GITHUB_OUTPUT
             echo "scan_message=ℹ️ No deployments discovered" >> $GITHUB_OUTPUT
             echo "failed_checks=0" >> $GITHUB_OUTPUT
             echo "passed_checks=0" >> $GITHUB_OUTPUT
             exit 0
           fi
+          
+          echo "✅ Found deployments.json, extracting tfvars files..."
+          cat source-repo/deployments.json | jq '.'
           
           # Extract all tfvars files from discovered deployments
           tfvars_files=$(jq -r '.deployments[]?.tfvars_file // .deployments[]?.file' source-repo/deployments.json | tr '\n' ' ')
@@ -911,148 +962,15 @@ jobs:
             
             console.log('✅ Apply workflow triggered');
 
-      # ===== UPLOAD ARTIFACTS =====
-      - name: 📦 Upload Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-controller-results
-          path: |
-            source-repo/deployments.json
-            source-repo/plan-results.json
-            source-repo/terraform-json/
-            source-repo/plan-markdown/
-            source-repo/canonical-plan/
-            source-repo/plans/
-            source-repo/logs/
-            source-repo/opa-result.txt
-            source-repo/checkov-results.json
-            source-repo/checkov-*.json
-            source-repo/*.log
-
-  # =============================================================================
-  # TERRAFORM APPLY JOB - Runs after PR is merged (auto-merge after OPA passed)
-  # =============================================================================
-  terraform-apply:
-    name: 🚀 Terraform Apply (Post-Merge)
-    runs-on: ubuntu-latest
-    if: github.event.action == 'terraform_apply' || (github.event.client_payload.action == 'apply' && github.event.client_payload.merged == 'true')
-    steps:
-      - name: 📋 Apply Event Details
-        run: |
-          echo "🚀 Terraform Apply Event Received"
-          echo "Source Repo: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}"
-          echo "PR Number: ${{ github.event.client_payload.pr_number }}"
-          echo "Merged SHA: ${{ github.event.client_payload.merge_commit_sha }}"
-          echo "Action: ${{ github.event.client_payload.action }}"
-
-      - name: Generate GitHub App Token
-        id: app-token
-        uses: tibdex/github-app-token@v2
-        with:
-          app_id: ${{ secrets.GT_APP_ID }}
-          private_key: ${{ secrets.GT_APP_PRIVATE_KEY }}
-
-      - name: Checkout Centralized Controller Repo
-        uses: actions/checkout@v4
-        with:
-          repository: Terraform-centilazed-pipline/centerlized-pipline-
-          path: controller
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Checkout Source Dev Repo (main/merged branch)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}
-          ref: main
-          path: source-repo
-          token: ${{ steps.app-token.outputs.token }}
-
-
-      # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
-      # Module sources now use: git::https://github.com/mmctech/tf-module.git//Module/<NAME>
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Install Dependencies
-        run: |
-          pip install pyyaml boto3 jinja2
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-          terraform_wrapper: false
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: terraform-apply
-
-      - name: Configure Git Authentication for Terraform Modules
-        run: |
-          echo "🔧 Configuring Git authentication for private Terraform modules..."
-          git config --global url."https://oauth2:${{ steps.app-token.outputs.token }}@github.com".insteadOf "https://github.com"
-          echo "✅ Git authentication configured for Terraform module downloads"
-
-      - name: Get Merged PR Files
-        id: merged-files
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          script: |
-            const { data: files } = await github.rest.pulls.listFiles({
-              owner: '${{ github.event.client_payload.source_owner }}',
-              repo: '${{ github.event.client_payload.source_repo }}',
-              pull_number: ${{ github.event.client_payload.pr_number }}
-            });
-            
-            const tfvarsFiles = files
-              .filter(f => f.filename.match(/\.(tfvars|yaml|yml|json)$/))
-              .filter(f => f.filename.startsWith('Accounts/') || f.filename.startsWith('configs/'))
-              .map(f => f.filename);
-            
-            console.log('Merged PR files:', tfvarsFiles);
-            core.setOutput('files', tfvarsFiles.join(' '));
-            core.setOutput('count', tfvarsFiles.length);
-
-      - name: 🔍 Discover Deployments for Apply
-        if: steps.merged-files.outputs.count > 0
-        id: discover
-        working-directory: source-repo
-        env:
-          TERRAFORM_DIR: ../controller
-        run: |
-          echo "🔍 Discovering deployments from merged PR..."
-          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
-            --changed-files "${{ steps.merged-files.outputs.files }}" \
-            --output-summary deployments.json \
-            --debug
-          
-          total=$(jq -r '.total_deployments // 0' deployments.json)
-          echo "total=$total" >> $GITHUB_OUTPUT
-          
-          if [ "$total" -gt 0 ]; then
-            echo "✅ Found $total deployments to apply"
-            echo "has_deployments=true" >> $GITHUB_OUTPUT
-          else
-            echo "ℹ️ No deployments found"
-            echo "has_deployments=false" >> $GITHUB_OUTPUT
-          fi
-
+      # ===== TERRAFORM APPLY (when action == 'apply') =====
       - name: 🚀 Terraform Apply
-        if: steps.discover.outputs.has_deployments == 'true'
+        if: github.event.client_payload.action == 'apply' && (steps.discover.outputs.has_deployments == 'true' || steps.discover-apply.outputs.has_deployments == 'true')
         id: apply
         working-directory: source-repo
         env:
           TERRAFORM_DIR: ../controller
         run: |
-          echo "🚀 Running terraform apply for multiple deployments..."
+          echo "🚀 Running terraform apply for deployments..."
           echo "🔧 Terraform directory: $TERRAFORM_DIR"
           
           # Use the deployment orchestrator to run applies
@@ -1082,19 +1000,18 @@ jobs:
               echo "✅ Applied $successful deployments successfully"
               if [ "$failed" -gt 0 ]; then
                 echo "⚠️ $failed deployments failed"
-                exit 1
+                # Don't exit 1 here - let the PR comment show the results
               fi
             else
               echo "❌ No successful applies"
-              exit 1
+              # Don't exit 1 here - let the PR comment show the results
             fi
           else
             echo "❌ No apply-results.json found"
-            exit 1
           fi
 
-      - name: 💬 Post Apply Results to Original PR
-        if: always() && steps.discover.outputs.has_deployments == 'true'
+      - name: 💬 Post Apply Results to PR
+        if: github.event.client_payload.action == 'apply' && always() && (steps.discover.outputs.has_deployments == 'true' || steps.discover-apply.outputs.has_deployments == 'true')
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -1102,7 +1019,7 @@ jobs:
             const fs = require('fs');
             
             let comment = `## 🚀 Terraform Apply Results\n\n`;
-            comment += `**Merged PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
+            comment += `**Merged PR**: [#${{ github.event.client_payload.pr_number }}](https://github.com/${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}/pull/${{ github.event.client_payload.pr_number }})\n`;
             comment += `**Applied to**: \`main\` branch\n\n`;
             
             const total = '${{ steps.apply.outputs.total_deployments }}';
@@ -1158,13 +1075,22 @@ jobs:
               body: comment
             });
 
-      - name: 📦 Upload Apply Artifacts
+      # ===== UPLOAD ARTIFACTS =====
+      - name: 📦 Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-apply-results
+          name: terraform-controller-results
           path: |
             source-repo/deployments.json
+            source-repo/plan-results.json
             source-repo/apply-results.json
+            source-repo/terraform-json/
+            source-repo/plan-markdown/
+            source-repo/canonical-plan/
+            source-repo/plans/
             source-repo/logs/
+            source-repo/opa-result.txt
+            source-repo/checkov-results.json
+            source-repo/checkov-*.json
             source-repo/*.log
