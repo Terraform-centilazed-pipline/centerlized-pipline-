@@ -344,18 +344,36 @@ jobs:
             done
             
             if [ -n "$full_paths" ]; then
-              echo "🎯 Scanning discovered .tfvars files: $full_paths"
+              echo "🎯 Found .tfvars files for scan: $full_paths"
+              echo "📁 Scanning centralized controller Terraform configuration..."
               
-              # Run Checkov scan on discovered tfvars files
-              echo "🔍 Running targeted Checkov scan on discovered deployments..."
+              # Checkov needs to scan the actual Terraform files (.tf), not .tfvars
+              # The controller's main.tf will reference these .tfvars during plan/apply
+              echo "🔍 Running Checkov scan on centralized controller configuration..."
               checkov --framework terraform \
-                --file $full_paths \
+                --directory ../controller \
                 --output json \
                 --output-file-path checkov-results \
                 --soft-fail \
                 --external-checks-dir /dev/null || {
                 echo "⚠️ Checkov scan encountered issues, checking for partial results..."
               }
+              
+              # Also scan the source repository for any .tf files if they exist
+              tf_files_in_source=$(find . -name "*.tf" | head -5)
+              if [ -n "$tf_files_in_source" ]; then
+                echo "🔍 Found .tf files in source repo, scanning those too..."
+                checkov --framework terraform \
+                  --directory . \
+                  --output json \
+                  --output-file-path checkov-results-source \
+                  --soft-fail \
+                  --external-checks-dir /dev/null || {
+                  echo "⚠️ Source repo scan had issues, continuing with controller scan..."
+                }
+              else
+                echo "ℹ️ No .tf files in source repo - scanning controller only"
+              fi
             else
               echo "ℹ️ No valid .tfvars files in discovered deployments"
               echo "scan_status=skipped" >> $GITHUB_OUTPUT
@@ -375,20 +393,34 @@ jobs:
           
           # Find the actual results file (Checkov creates it with different names)
           echo "🔍 Locating Checkov results file..."
+          results_file=""
+          
+          # Check for main controller scan results
           if [ -f "./checkov-results.json" ]; then
             results_file="./checkov-results.json"
           elif [ -f "./checkov-results/results_json.json" ]; then
             results_file="./checkov-results/results_json.json"
-            echo "📁 Found results in subdirectory: $results_file"
+            echo "📁 Found controller results in subdirectory: $results_file"
           elif [ -f "./results_json.json" ]; then
             results_file="./results_json.json"
-          else
-            echo "🔄 Trying simplified Checkov scan..."
+          fi
+          
+          # If no controller results, check for source results  
+          if [ -z "$results_file" ] || [ ! -f "$results_file" ]; then
+            if [ -f "./checkov-results-source/results_json.json" ]; then
+              results_file="./checkov-results-source/results_json.json"
+              echo "� Found source results: $results_file"
+            fi
+          fi
+          
+          # If still no results, try fallback scan
+          if [ -z "$results_file" ] || [ ! -f "$results_file" ]; then
+            echo "🔄 No scan results found, trying fallback directory scan..."
             checkov --framework terraform \
-              --directory . \
+              --directory ../controller \
               --output json \
               --quiet \
-              --soft-fail 2>checkov-error.log 1>./simple-results.json || {
+              --soft-fail 2>checkov-error.log 1>./fallback-results.json || {
               echo "❌ All Checkov scan attempts failed"
               echo "📋 Error log:"
               cat checkov-error.log 2>/dev/null || echo "No error log available"
@@ -398,7 +430,7 @@ jobs:
               echo "passed_checks=0" >> $GITHUB_OUTPUT
               exit 0
             }
-            results_file="./simple-results.json"
+            results_file="./fallback-results.json"
           fi
           
           # Process results
