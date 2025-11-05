@@ -552,58 +552,34 @@ class TerraformOrchestrator:
                 # Get just the filename
                 filename = Path(json_file_path).name
                 debug_print(f"Looking for policy file: {filename}")
-                debug_print(f"  Referenced path: {json_file_path}")
                 debug_print(f"  Deployment dir: {deployment.get('deployment_dir', 'NOT SET')}")
                 
-                # Try to find the actual file
-                source_file = None
+                # Simple approach: Look in the deployment directory only
+                # This matches our structure: Accounts/project/project.json
+                deployment_dir = Path(deployment['deployment_dir'])
+                if not deployment_dir.is_absolute():
+                    deployment_dir = self.working_dir / deployment_dir
                 
-                # Option 1: Try the exact path from tfvars (relative to working_dir)
-                candidate1 = self.working_dir / json_file_path
-                debug_print(f"  Trying option 1 (tfvars path): {candidate1}")
-                if candidate1.exists():
-                    source_file = candidate1
-                    debug_print(f"✅ Found policy file at tfvars path: {candidate1}")
-                else:
-                    debug_print(f"  ❌ Not found at option 1")
-                    # Option 2: Look in the deployment directory
-                    deployment_dir = Path(deployment['deployment_dir'])
-                    if not deployment_dir.is_absolute():
-                        deployment_dir = self.working_dir / deployment_dir
-                    
-                    candidate2 = deployment_dir / filename
-                    debug_print(f"  Trying option 2 (deployment dir): {candidate2}")
-                    if candidate2.exists():
-                        source_file = candidate2
-                        debug_print(f"✅ Found policy file in deployment dir: {candidate2}")
-                    else:
-                        debug_print(f"  ❌ Not found at option 2")
-                        # Option 3: Search for the file in deployment directory recursively
-                        debug_print(f"  Trying option 3 (recursive search in {deployment_dir})")
-                        for found_file in deployment_dir.rglob(filename):
-                            source_file = found_file
-                            debug_print(f"✅ Found policy file recursively: {found_file}")
-                            break
-                        if not source_file:
-                            debug_print(f"  ❌ Not found in recursive search")
+                source_file = deployment_dir / filename
+                debug_print(f"  Looking for: {source_file}")
                 
-                if source_file:
-                    # Destination preserves the tfvars path (what terraform expects)
-                    dest_file = dest_dir / json_file_path
-                    
-                    # Create destination directory if needed
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Copy the policy file
-                    shutil.copy2(source_file, dest_file)
-                    print(f"✅ Copied policy file: {filename}")
-                    debug_print(f"   From: {source_file}")
-                    debug_print(f"   To:   {dest_file}")
+                if source_file.exists():
+                    debug_print(f"✅ Found policy file in deployment dir: {source_file}")
                 else:
-                    print(f"⚠️ Warning: Policy file '{filename}' not found")
-                    print(f"   Searched in tfvars path: {self.working_dir / json_file_path}")
-                    print(f"   Searched in deployment: {deployment['deployment_dir']}")
-                    debug_print(f"Full tfvars path tried: {json_file_path}")
+                    debug_print(f"❌ Policy file not found: {source_file}")
+                    continue
+                
+                # Destination preserves the tfvars path (what terraform expects)
+                dest_file = dest_dir / json_file_path
+                
+                # Create destination directory if needed
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Copy the policy file
+                shutil.copy2(source_file, dest_file)
+                print(f"✅ Copied policy file: {filename}")
+                debug_print(f"   From: {source_file}")
+                debug_print(f"   To:   {dest_file}")
                     
         except Exception as e:
             # Don't fail the deployment, just warn
