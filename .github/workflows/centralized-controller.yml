@@ -213,42 +213,145 @@ jobs:
 
       # ===== STEP 2.5: SECURITY SCAN WITH CHECKOV =====
       - name: 🛡️ Security Scan with Checkov
-        if: steps.discover.outputs.has_deployments == 'true'
+        if: always()
         id: security
         working-directory: source-repo
         continue-on-error: true
         run: |
           echo "🛡️ Running Checkov security scan..."
+          echo "📁 Working directory: $(pwd)"
+          echo "📂 Directory contents:"
+          ls -la
           
-          # Install Checkov
-          pip install checkov
+          # Setup Python environment
+          echo "🐍 Setting up Python environment..."
+          python3 --version
+          pip3 --version
+          
+          # Check if we have any Terraform-related files to scan
+          echo "🔍 Looking for files to scan..."
+          tf_files=$(find . -name "*.tf" -o -name "*.tfvars" -o -name "*.json" | grep -E "\.(tf|tfvars|json)$" | head -10)
+          
+          if [ -z "$tf_files" ]; then
+            echo "⚠️ No Terraform files found to scan"
+            echo "📂 Available files:"
+            find . -name "*.tf*" -o -name "*.json" | head -10 || echo "No .tf, .tfvars, or .json files found"
+            echo "scan_status=skipped" >> $GITHUB_OUTPUT
+            echo "scan_message=⚠️ No Terraform files found to scan" >> $GITHUB_OUTPUT
+            echo "failed_checks=0" >> $GITHUB_OUTPUT
+            echo "passed_checks=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "✅ Found files to scan:"
+          echo "$tf_files"
+          
+          # Install Checkov with proper error handling
+          echo "📦 Installing Checkov..."
+          pip3 install --upgrade pip || echo "Failed to upgrade pip, continuing..."
+          pip3 install checkov || {
+            echo "❌ Failed to install Checkov with pip3, trying pip..."
+            pip install checkov || {
+              echo "❌ Failed to install Checkov completely"
+              echo "scan_status=skipped" >> $GITHUB_OUTPUT
+              echo "scan_message=⚠️ Failed to install Checkov" >> $GITHUB_OUTPUT
+              echo "failed_checks=0" >> $GITHUB_OUTPUT
+              echo "passed_checks=0" >> $GITHUB_OUTPUT
+              exit 0
+            }
+          }
+          
+          # Verify Checkov installation
+          echo "🔧 Verifying Checkov installation..."
+          checkov --version || {
+            echo "❌ Checkov installation verification failed"
+            echo "scan_status=skipped" >> $GITHUB_OUTPUT
+            echo "scan_message=⚠️ Checkov installation verification failed" >> $GITHUB_OUTPUT
+            echo "failed_checks=0" >> $GITHUB_OUTPUT
+            echo "passed_checks=0" >> $GITHUB_OUTPUT
+            exit 0
+          }
           
           # Create results directory
           mkdir -p checkov-results
           
-          # Run Checkov scan on Accounts directory
+          # Run Checkov scan - scan current directory for all Terraform files
+          echo "🔍 Running Checkov scan on entire repository..."
           checkov --framework terraform \
-            --directory Accounts \
+            --directory . \
             --output json \
             --output-file-path checkov-results/results.json \
-            --quiet --soft-fail --compact || true
+            --quiet \
+            --soft-fail \
+            --compact \
+            --skip-path .git \
+            --skip-path .github \
+            --external-checks-dir /dev/null 2>/dev/null || {
+            echo "⚠️ Checkov scan encountered issues, checking for partial results..."
+            if [ ! -f "checkov-results/results.json" ]; then
+              # Try a simpler scan
+              echo "🔄 Trying simplified Checkov scan..."
+              checkov --framework terraform \
+                --directory . \
+                --output json \
+                --quiet \
+                --soft-fail 2>checkov-error.log 1>checkov-results/results.json || {
+                echo "❌ All Checkov scan attempts failed"
+                echo "📋 Error log:"
+                cat checkov-error.log 2>/dev/null || echo "No error log available"
+                echo "scan_status=skipped" >> $GITHUB_OUTPUT
+                echo "scan_message=⚠️ Checkov scan failed completely" >> $GITHUB_OUTPUT
+                echo "failed_checks=0" >> $GITHUB_OUTPUT
+                echo "passed_checks=0" >> $GITHUB_OUTPUT
+                exit 0
+              }
+            fi
+          }
           
           # Process results
           if [ -f "checkov-results/results.json" ]; then
+            echo "✅ Checkov results file found"
+            file_size=$(wc -c < checkov-results/results.json)
+            echo "📄 Results file size: $file_size bytes"
+            
+            if [ "$file_size" -lt 10 ]; then
+              echo "❌ Results file too small, likely empty"
+              echo "scan_status=skipped" >> $GITHUB_OUTPUT
+              echo "scan_message=⚠️ Checkov results file empty" >> $GITHUB_OUTPUT
+              echo "failed_checks=0" >> $GITHUB_OUTPUT
+              echo "passed_checks=0" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            # Debug: Show structure of results
+            echo "📋 Results structure:"
+            jq keys checkov-results/results.json 2>/dev/null || {
+              echo "⚠️ Results file is not valid JSON, trying to parse anyway..."
+              cat checkov-results/results.json | head -10
+            }
+            
+            # Extract results with better error handling
             failed_checks=$(jq '.results.failed_checks | length' checkov-results/results.json 2>/dev/null || echo "0")
             passed_checks=$(jq '.results.passed_checks | length' checkov-results/results.json 2>/dev/null || echo "0")
+            
+            # If jq parsing failed, try alternative parsing
+            if [ "$failed_checks" = "null" ] || [ "$passed_checks" = "null" ]; then
+              echo "🔄 Alternative parsing attempt..."
+              failed_checks=$(jq 'if has("results") then .results.failed_checks | length else 0 end' checkov-results/results.json 2>/dev/null || echo "0")
+              passed_checks=$(jq 'if has("results") then .results.passed_checks | length else 0 end' checkov-results/results.json 2>/dev/null || echo "0")
+            fi
             
             echo "🔍 Security scan completed: $failed_checks failed, $passed_checks passed"
             echo "failed_checks=$failed_checks" >> $GITHUB_OUTPUT
             echo "passed_checks=$passed_checks" >> $GITHUB_OUTPUT
             
             # Determine status
-            if [ "$failed_checks" -gt 0 ]; then
+            if [ "$failed_checks" != "0" ] && [ "$failed_checks" -gt 0 ] 2>/dev/null; then
               echo "scan_status=warning" >> $GITHUB_OUTPUT
               echo "scan_message=⚠️ Security issues found ($failed_checks)" >> $GITHUB_OUTPUT
               
               # Extract critical/high severity issues for detailed reporting
-              critical_high_issues=$(jq -r '.results.failed_checks[] | select(.severity == "CRITICAL" or .severity == "HIGH") | "\(.check_id): \(.check_name)"' checkov-results/results.json 2>/dev/null | head -10)
+              critical_high_issues=$(jq -r '.results.failed_checks[]? | select(.severity == "CRITICAL" or .severity == "HIGH") | "\(.check_id): \(.check_name)"' checkov-results/results.json 2>/dev/null | head -10)
               if [ -n "$critical_high_issues" ]; then
                 echo "critical_issues<<EOF" >> $GITHUB_OUTPUT
                 echo "$critical_high_issues" >> $GITHUB_OUTPUT
@@ -259,8 +362,10 @@ jobs:
               echo "scan_message=✅ Security scan passed" >> $GITHUB_OUTPUT
             fi
           else
+            echo "❌ Checkov results file not found after scan"
+            ls -la checkov-results/ || echo "Results directory not found"
             echo "scan_status=skipped" >> $GITHUB_OUTPUT
-            echo "scan_message=⚠️ Security scan could not run" >> $GITHUB_OUTPUT
+            echo "scan_message=⚠️ Security scan could not generate results" >> $GITHUB_OUTPUT
             echo "failed_checks=0" >> $GITHUB_OUTPUT
             echo "passed_checks=0" >> $GITHUB_OUTPUT
           fi
