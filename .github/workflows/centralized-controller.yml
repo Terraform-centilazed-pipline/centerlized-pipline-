@@ -47,7 +47,7 @@ jobs:
       - name: Checkout Centralized Controller Repo
         uses: actions/checkout@v4
         with:
-          repository: mmctech/mmctech-aws-s3-tf-poc
+          repository: Terraform-centilazed-pipline/centerlized-pipline-
           path: controller
           token: ${{ steps.app-token.outputs.token }}
 
@@ -294,7 +294,7 @@ jobs:
             comment += `**This PR will be closed automatically due to security violations.**\n\n`;
             comment += `---\n`;
             comment += `🤖 *Centralized Controller - Security Scan* | `;
-            comment += `[View Run](https://github.com/mmctech/mmctech-aws-s3-tf-poc/actions/runs/${{ github.run_id }})`;
+            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
@@ -615,7 +615,7 @@ jobs:
             
             comment += `\n---\n`;
             comment += `🤖 *Centralized Controller* | `;
-            comment += `[View Run](https://github.com/mmctech/mmctech-aws-s3-tf-poc/actions/runs/${{ github.run_id }})`;
+            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
@@ -788,7 +788,7 @@ jobs:
       - name: Checkout Centralized Controller Repo
         uses: actions/checkout@v4
         with:
-          repository: mmctech/mmctech-aws-s3-tf-poc
+          repository: Terraform-centilazed-pipline/centerlized-pipline-
           path: controller
           token: ${{ steps.app-token.outputs.token }}
 
@@ -981,7 +981,7 @@ jobs:
             
             comment += `\n---\n`;
             comment += `🤖 *Centralized Controller - Apply* | `;
-            comment += `[View Run](https://github.com/mmctech/mmctech-aws-s3-tf-poc/actions/runs/${{ github.run_id }})`;
+            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
