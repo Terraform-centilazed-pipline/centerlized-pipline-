@@ -172,6 +172,17 @@ jobs:
             echo "plan_message=❌ Plan results not generated" >> $GITHUB_OUTPUT
           fi
 
+      - name: 📤 Upload Plan Results as Artifacts
+        if: steps.plan.outputs.plan_status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-results-pr-${{ github.event.client_payload.pr_number }}
+          path: |
+            source-repo/plan-results.json
+            source-repo/plan-markdown/*.md
+            source-repo/terraform-json/*.json
+          retention-days: 30
+
       - name: 🔐 OPA Policy Validation
         if: steps.plan.outputs.plan_status == 'success'
         id: opa
@@ -287,12 +298,15 @@ jobs:
               }
             }
 
-      - name: 💬 Enhanced PR Comments
+      - name: 💬 Enhanced PR Comments with Plan Details
         if: always() && steps.discover.outputs.has_deployments == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const fs = require('fs');
+            const path = require('path');
+            
             const prNumber = '${{ github.event.client_payload.pr_number }}';
             const deploymentCount = '${{ steps.discover.outputs.deployment_count }}';
             const planStatus = '${{ steps.plan.outputs.plan_status }}';
@@ -314,23 +328,62 @@ jobs:
               nextSteps = '**Review security issues before merging.**';
             }
             
+            // Read plan details if available
+            let planDetails = '';
+            try {
+              const planResultsPath = 'source-repo/plan-results.json';
+              if (fs.existsSync(planResultsPath)) {
+                const planResults = JSON.parse(fs.readFileSync(planResultsPath, 'utf8'));
+                
+                planDetails = '\n### 📊 Detailed Plan Results\n';
+                
+                if (planResults.deployments && planResults.deployments.length > 0) {
+                  for (const deployment of planResults.deployments) {
+                    const status = deployment.success ? '✅' : '❌';
+                    planDetails += `\n**${status} ${deployment.deployment_key}**\n`;
+                    
+                    if (deployment.plan_summary) {
+                      planDetails += `- **Resources to Add:** ${deployment.plan_summary.add || 0}\n`;
+                      planDetails += `- **Resources to Change:** ${deployment.plan_summary.change || 0}\n`;
+                      planDetails += `- **Resources to Destroy:** ${deployment.plan_summary.destroy || 0}\n`;
+                    }
+                    
+                    // Link to markdown plan if exists
+                    const markdownFile = deployment.deployment_key.replace(/[\/\\]/g, '-') + '-plan.md';
+                    planDetails += `- 📄 [View Detailed Plan](../actions/runs/${{ github.run_id }}/artifacts) (Download artifacts: ${markdownFile})\n`;
+                  }
+                }
+                
+                // Add artifact download link
+                planDetails += `\n**📥 Download Full Plan Details:**\n`;
+                planDetails += `- [Plan Results Artifacts](../actions/runs/${{ github.run_id }}/artifacts)\n`;
+                planDetails += `- Includes: Terraform plans, JSON output, and markdown summaries\n`;
+              }
+            } catch (error) {
+              console.log('Could not read plan details:', error.message);
+              planDetails = '\n### 📊 Plan Details\n*Plan details will be available in workflow artifacts*\n';
+            }
+            
             const comment = `## 🎯 Centralized Pipeline Validation Results\n\n` +
               `**📊 Overall Status:** ${overallStatus}\n\n` +
               `### 📋 Validation Summary\n` +
               `- **Deployments Processed:** ${deploymentCount}\n` +
               `- **Terraform Plan:** ${planMessage}\n` +
               `- **OPA Policy Check:** ${opaMessage}\n` +
-              `- **Security Scan:** ${securityMessage}\n\n` +
+              `- **Security Scan:** ${securityMessage}\n` +
+              planDetails + '\n\n' +
               `### 🚀 Next Steps\n` +
               `${nextSteps}\n\n` +
               `### 🔄 Manual Merge Process\n` +
               `After all validations pass:\n` +
               `1. ✅ Review the validation results above\n` +
-              `2. ✅ Manually merge this PR when ready\n` +
-              `3. ✅ Apply will be triggered automatically after merge\n\n` +
+              `2. ✅ Review plan details in artifacts if needed\n` +
+              `3. ✅ Manually merge this PR when ready\n` +
+              `4. ✅ Apply will be triggered automatically after merge\n\n` +
               `---\n` +
               `*🤖 Automated validation by Centralized Controller*\n` +
-              `*⏰ ${new Date().toISOString()}*`;
+              `*⏰ ${new Date().toISOString()}*\n` +
+              `*📁 Artifacts: [View Plan Files](../actions/runs/${{ github.run_id }}/artifacts)*`;
 
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
