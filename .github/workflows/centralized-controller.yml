@@ -133,6 +133,9 @@ jobs:
         env:
           TERRAFORM_DIR: ../controller
         run: |
+          echo "🔍 Running discovery for plan mode..."
+          echo "Changed files: ${{ steps.changed-files.outputs.files }}"
+          echo "Changed files count: ${{ steps.changed-files.outputs.count }}"
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
             --changed-files "${{ steps.changed-files.outputs.files }}" \
             --output-summary deployments.json \
@@ -161,6 +164,8 @@ jobs:
         env:
           TERRAFORM_DIR: ../controller
         run: |
+          echo "🔍 Running discovery for apply mode..."
+          echo "Apply mode - using changed files: ${{ github.event.client_payload.changed_files || github.event.client_payload.files }}"
           # For apply mode, get changed files from the merge commit
           python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
             --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
@@ -175,19 +180,6 @@ jobs:
             echo "has_deployments=true" >> $GITHUB_OUTPUT
           else
             echo "ℹ️ No deployments found for apply"
-            echo "has_deployments=false" >> $GITHUB_OUTPUT
-          fi
-          echo "total=$total" >> $GITHUB_OUTPUT
-          
-          if [ "$total" -gt 0 ]; then
-            echo "✅ Found $total deployments"
-            echo "has_deployments=true" >> $GITHUB_OUTPUT
-            
-            # Extract first tfvars file for pre-validation
-            first_tfvars=$(jq -r '.deployments[0].tfvars_file // empty' deployments.json)
-            echo "first_tfvars=$first_tfvars" >> $GITHUB_OUTPUT
-          else
-            echo "ℹ️ No deployments found"
             echo "has_deployments=false" >> $GITHUB_OUTPUT
           fi
 
@@ -259,7 +251,7 @@ jobs:
 
       # ===== STEP 2.5: SECURITY SCAN WITH CHECKOV =====
       - name: 🛡️ Security Scan with Checkov
-        if: always()
+        if: (steps.discover.outputs.has_deployments == 'true') || (steps.discover-apply.outputs.has_deployments == 'true')
         id: security
         working-directory: source-repo
         continue-on-error: true
