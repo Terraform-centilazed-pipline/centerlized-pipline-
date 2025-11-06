@@ -54,7 +54,7 @@ jobs:
       - name: Checkout Centralized Controller Repo
         uses: actions/checkout@v4
         with:
-          repository: Terraform-centilazed-pipline/centerlized-pipline-
+          repository: mmctech/mmctech-aws-tf-controller-poc
           path: controller
           token: ${{ steps.app-token.outputs.token }}
 
@@ -66,37 +66,37 @@ jobs:
           path: source-repo
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Checkout OPA Policies
+      - name: Checkout OPA Polices
         uses: actions/checkout@v4
         with:
-          repository: 'Terraform-centilazed-pipline/OPA-Poclies'
+          repository: mmctech/mmctech-aws-tf-opa-polices
           path: opa-polices
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: 🔍 Debug OPA Policies Structure
         run: |
-          echo "🔍 === OPA POLICIES DEBUG ==="
-          echo "📁 Root opa-polices directory:"
-          ls -la opa-polices/ || echo "❌ opa-polices directory not found"
-          echo ""
-          
-          echo "📂 Looking for terraform/ directory:"
-          if [ -d "opa-polices/terraform" ]; then
-            echo "✅ terraform/ directory found"
-            ls -la opa-polices/terraform/
-          else
-            echo "❌ terraform/ directory not found"
-            echo "📋 Available directories in opa-polices/:"
-            find opa-polices/ -type d -maxdepth 2 | head -10
-          fi
-          echo ""
-          
-          echo "🔍 Looking for .rego files:"
-          find opa-polices/ -name "*.rego" -type f | head -10
-          echo ""
-          
-          echo "📋 All files in opa-polices (first 20):"
-          find opa-polices/ -type f | head -20
+            echo "🔍 === OPA POLICIES DEBUG ==="
+            echo "📁 Root opa-polices directory:"
+            ls -la opa-polices/ || echo "❌ opa-polices directory not found"
+            echo ""
+            
+            echo "📂 Looking for terraform/ directory:"
+            if [ -d "opa-polices/terraform" ]; then
+              echo "✅ terraform/ directory found"
+              ls -la opa-polices/terraform/
+            else
+              echo "❌ terraform/ directory NOT found"
+              echo "📋 Available directories in opa-polices/:"
+              find opa-polices/ -type d -maxdepth 2 | head -10
+            fi
+            echo ""
+            
+            echo "🔍 Looking for .rego files:"
+            find opa-polices/ -name "*.rego" -type f | head -10
+            echo ""
+            
+            echo "📋 All files in opa-polices (first 20):"
+            find opa-polices/ -type f | head -20
 
       # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
       # Module sources now use: git::https://github.com/mmctech/tf-module.git//Module/<NAME>
@@ -104,7 +104,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN}}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME}}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: terraform-controller
 
@@ -311,21 +311,25 @@ jobs:
             echo "failed_plans=$failed" >> $GITHUB_OUTPUT
             echo "has_changes=$has_changes" >> $GITHUB_OUTPUT
             
-            # Select first plan for OPA validation
+            # Prepare all plans for OPA validation
             if [ -d "terraform-json" ] && [ "$successful" -gt 0 ]; then
               mkdir -p canonical-plan
-              FIRST_JSON=$(ls terraform-json/*.json 2>/dev/null | head -n1)
-              if [ -n "$FIRST_JSON" ]; then
-                cp "$FIRST_JSON" canonical-plan/plan.json
-                echo "✅ Selected plan for OPA: $FIRST_JSON"
+              json_files=(terraform-json/*.json)
+              if [ -e "${json_files[0]}" ]; then
+                echo "✅ Found ${#json_files[@]} JSON plans for OPA validation"
+                # Copy all JSON files to canonical-plan directory for multi-plan validation
+                cp terraform-json/*.json canonical-plan/
                 echo "opa_plan_ready=true" >> $GITHUB_OUTPUT
+                echo "total_plans=${#json_files[@]}" >> $GITHUB_OUTPUT
               else
                 echo "⚠️ No JSON plans found for OPA validation"
                 echo "opa_plan_ready=false" >> $GITHUB_OUTPUT
+                echo "total_plans=0" >> $GITHUB_OUTPUT
               fi
             else
               echo "⚠️ No successful plans for OPA validation"
               echo "opa_plan_ready=false" >> $GITHUB_OUTPUT
+              echo "total_plans=0" >> $GITHUB_OUTPUT
             fi
             
             # Continue workflow even if some plans failed
@@ -347,82 +351,346 @@ jobs:
         id: opa
         working-directory: source-repo
         run: |
-          echo "🛡️ Running OPA validation on canonical plan..."
+          echo "🛡️ Running OPA validation on all plans..."
           echo "📁 Using multi-service policy structure: terraform/main.rego"
           
-          if [ ! -f "canonical-plan/plan.json" ]; then
-            echo "❌ No canonical plan found"
-            exit 1
-          fi
+          total_plans="${{ steps.plan.outputs.total_plans }}"
+          echo "📦 Validating $total_plans plan(s)..."
           
-          # Basic plan analysis
-          echo "� Plan analysis:"
-          echo "   File size: $(wc -c < canonical-plan/plan.json) bytes"
-          echo "   Resource changes: $(jq -r '.resource_changes | length' canonical-plan/plan.json 2>/dev/null || echo "0")"
+          # Initialize counters
+          total_violations_all=0
+          critical_violations_all=0
+          high_violations_all=0
+          medium_violations_all=0
+          low_violations_all=0
           
-          # Get deployment summary (which services are being deployed)
-          echo "📦 Detecting services in plan..."
-          opa eval -d ../opa-policies/ \
-            -i canonical-plan/plan.json \
-            "data.terraform.main.deployment_summary" \
-            --format pretty > opa-summary.txt || true
+          # Create detailed results file
+          echo "# OPA Validation Results" > opa-detailed-results.md
+          echo "" >> opa-detailed-results.md
           
-          services_detected=$(opa eval -d ../opa-policies/ \
-            -i canonical-plan/plan.json \
-            "data.terraform.main.deployment_summary.services_detected" \
-            --format json | jq -r '.result[0].expressions[0].value[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+          # Validate each plan separately
+          plan_number=0
+          validation_failed=false
           
-          if [ -n "$services_detected" ]; then
-            echo "📦 Services detected: $services_detected"
+          for json_file in canonical-plan/*.json; do
+            if [ ! -f "$json_file" ]; then
+              echo "⚠️ No JSON plans found to validate"
+              continue
+            fi
+            
+            plan_number=$((plan_number + 1))
+            plan_name=$(basename "$json_file" .json)
+            echo ""
+            echo "� [$plan_number/$total_plans] Validating: $plan_name"
+            
+            # Basic plan analysis
+            echo "📊 Plan analysis for $plan_name:"
+            echo "   File size: $(wc -c < "$json_file") bytes"
+            echo "   Resource changes: $(jq -r '.resource_changes | length' "$json_file" 2>/dev/null || echo "0")"
+            
+            # Debug: Show resource types in the plan
+            echo "🔍 Resource types in plan:"
+            jq -r '.resource_changes[]?.type' "$json_file" 2>/dev/null | sort | uniq -c || echo "   No resource types found"
+            
+            # Debug: Show resource actions
+            echo "🔍 Resource actions:"
+            jq -r '.resource_changes[]?.change.actions[]?' "$json_file" 2>/dev/null | sort | uniq -c || echo "   No actions found"
+            
+            # Get deployment summary for this plan
+            echo "🔍 Debugging OPA service detection..."
+            
+            # Debug: Check resource_changes structure
+            echo "🔍 Checking resource_changes structure..."
+            resource_count=$(jq -r '.resource_changes | length' "$json_file" 2>/dev/null || echo "0")
+            echo "   Resource count from jq: $resource_count"
+            
+            # Debug: Show first resource structure  
+            echo "🔍 First resource structure:"
+            jq -r '.resource_changes[0] | {type: .type, actions: .change.actions}' "$json_file" 2>/dev/null || echo "   No first resource"
+            
+            # Test if OPA can access resource_changes
+            opa_resource_count=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "count(input.resource_changes)" \
+              --format json | jq -r '.result[0].expressions[0].value' 2>/dev/null || echo "0")
+            echo "   Resource count from OPA: $opa_resource_count"
+            
+            # Test basic OPA functionality
+            echo "🔍 Basic OPA tests:"
+            basic_test=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "1 + 1" \
+              --format json | jq -r '.result[0].expressions[0].value' 2>/dev/null || echo "error")
+            echo "   Basic math test (1+1): $basic_test"
+            
+            # Test input access
+            input_test=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "input" \
+              --format json | jq -r '.result[0].expressions[0].value | type' 2>/dev/null || echo "error")
+            echo "   Input type: $input_test"
+            
+            # Test if main.rego is loaded
+            main_test=$(opa eval -d ../opa-polices/ \
+              "data.terraform.main" \
+              --format json | jq -r '.result[0].expressions[0].value | type' 2>/dev/null || echo "error")
+            echo "   Main policy loaded: $main_test"
+            
+            # Test OPA with verbose error output
+            echo "🔍 OPA error check:"
+            opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "data.terraform.main.has_s3_resources" \
+              --format json 2>&1 | head -5 || echo "   OPA command failed"
+            
+            # Test if OPA can see S3 resources
+            s3_check=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "data.terraform.main.has_s3_resources" \
+              --format json | jq -r '.result[0].expressions[0].value' 2>/dev/null || echo "false")
+            echo "   S3 resources detected: $s3_check"
+            
+            # Check all services detection
+            all_services=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "data.terraform.main.services_detected" \
+              --format json | jq -r '.result[0].expressions[0].value[]?' 2>/dev/null || echo "none")
+            echo "   All services detected: $all_services"
+            
+            # Manual S3 check using OPA query
+            echo "🔍 Manual S3 detection test:"
+            manual_s3=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              '[r | some r in input.resource_changes; startswith(r.type, "aws_s3")]' \
+              --format json | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
+            echo "   Manual S3 count: $manual_s3"
+            
+            services_detected=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "data.terraform.main.deployment_summary.services_detected" \
+              --format json | jq -r '.result[0].expressions[0].value[]?' 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+            
+            if [ -n "$services_detected" ]; then
+              echo "📦 Services detected in $plan_name: $services_detected"
+            else
+              echo "ℹ️ No specific services detected in $plan_name"
+            fi
+            
+            # Run OPA validation on this plan
+            echo "🔍 Running policy validation on $plan_name..."
+            opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "data.terraform.main.deny" \
+              --format pretty > "opa-result-$plan_name.txt" || true
+            
+            # Count violations for this plan
+            violations_json=$(opa eval -d ../opa-polices/ \
+              -i "$json_file" \
+              "data.terraform.main.deny" \
+              --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":{}}]}]}')
+            
+            # Parse violations from OPA object format
+            plan_total=$(echo "$violations_json" | jq -r '
+              [.result[0].expressions[0].value // {} | 
+               if type == "object" then keys[] else empty end |
+               try fromjson catch empty |
+               select(type == "object")] | length' 2>/dev/null || echo "0")
+               
+            plan_critical=$(echo "$violations_json" | jq -r '
+              [.result[0].expressions[0].value // {} | 
+               if type == "object" then keys[] else empty end |
+               try fromjson catch empty |
+               select(type == "object" and .severity == "critical")] | length' 2>/dev/null || echo "0")
+               
+            plan_high=$(echo "$violations_json" | jq -r '
+              [.result[0].expressions[0].value // {} | 
+               if type == "object" then keys[] else empty end |
+               try fromjson catch empty |
+               select(type == "object" and .severity == "high")] | length' 2>/dev/null || echo "0")
+               
+            plan_medium=$(echo "$violations_json" | jq -r '
+              [.result[0].expressions[0].value // {} | 
+               if type == "object" then keys[] else empty end |
+               try fromjson catch empty |
+               select(type == "object" and .severity == "medium")] | length' 2>/dev/null || echo "0")
+               
+            plan_low=$(echo "$violations_json" | jq -r '
+              [.result[0].expressions[0].value // {} | 
+               if type == "object" then keys[] else empty end |
+               try fromjson catch empty |
+               select(type == "object" and .severity == "low")] | length' 2>/dev/null || echo "0")
+            
+            # Ensure variables are numeric
+            plan_total=$(echo "${plan_total:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+            plan_critical=$(echo "${plan_critical:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+            plan_high=$(echo "${plan_high:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+            plan_medium=$(echo "${plan_medium:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+            plan_low=$(echo "${plan_low:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+            
+            # Add to totals
+            total_violations_all=$((total_violations_all + plan_total))
+            critical_violations_all=$((critical_violations_all + plan_critical))
+            high_violations_all=$((high_violations_all + plan_high))
+            medium_violations_all=$((medium_violations_all + plan_medium))
+            low_violations_all=$((low_violations_all + plan_low))
+            
+            echo "📊 Results for $plan_name:"
+            echo "   Total violations: $plan_total"
+            echo "   🔴 Critical: $plan_critical"
+            echo "   🟠 High: $plan_high"
+            echo "   🟡 Medium: $plan_medium"
+            echo "   🟢 Low: $plan_low"
+            
+            # Add to detailed results
+            echo "## Plan: $plan_name" >> opa-detailed-results.md
+            echo "" >> opa-detailed-results.md
+            echo "**Services Detected:** $services_detected" >> opa-detailed-results.md
+            echo "**Violations:** $plan_total (🔴 $plan_critical critical, 🟠 $plan_high high, 🟡 $plan_medium medium, 🟢 $plan_low low)" >> opa-detailed-results.md
+            echo "" >> opa-detailed-results.md
+            
+            if [ "$plan_total" -gt 0 ]; then
+              validation_failed=true
+              echo "❌ Plan $plan_name has $plan_total violations"
+              echo "### Violation Details:" >> opa-detailed-results.md
+              echo '```' >> opa-detailed-results.md
+              cat "opa-result-$plan_name.txt" >> opa-detailed-results.md
+              echo '```' >> opa-detailed-results.md
+            else
+              echo "✅ Plan $plan_name passed validation"
+              echo "✅ No violations found" >> opa-detailed-results.md
+            fi
+            echo "" >> opa-detailed-results.md
+          done
+          
+          echo ""
+          echo "📊 Overall Validation Results:"
+          echo "   Plans validated: $plan_number"
+          echo "   Total violations: $total_violations_all"
+          echo "   🔴 Critical: $critical_violations_all"
+          echo "   🟠 High: $high_violations_all"
+          echo "   🟡 Medium: $medium_violations_all"
+          echo "   🟢 Low: $low_violations_all"
+          
+          # Set outputs
+          echo "total_violations=$total_violations_all" >> $GITHUB_OUTPUT
+          echo "critical_violations=$critical_violations_all" >> $GITHUB_OUTPUT
+          echo "high_violations=$high_violations_all" >> $GITHUB_OUTPUT
+          echo "medium_violations=$medium_violations_all" >> $GITHUB_OUTPUT
+          echo "low_violations=$low_violations_all" >> $GITHUB_OUTPUT
+          echo "plans_validated=$plan_number" >> $GITHUB_OUTPUT
+          
+          if [ "$total_violations_all" -eq 0 ]; then
+            echo "validation_status=passed" >> $GITHUB_OUTPUT
+            echo ""
+            echo "✅ All $plan_number plans passed validation - deployment authorized!"
           else
-            echo "ℹ️ No specific services detected, will run all policies"
+            echo "validation_status=failed" >> $GITHUB_OUTPUT
+            echo ""
+            echo "❌ Validation failed: $total_violations_all violations found across $plan_number plans"
+            echo ""
+            echo "📋 See opa-detailed-results.md for complete violation details"
           fi
+
+      # ===== DEBUG: Show Actual Plan JSON Structure =====
+      - name: 🔍 Debug Actual Plan JSON Structure  
+        if: steps.plan.outputs.opa_plan_ready == 'true'
+        working-directory: source-repo
+        run: |
+          echo "🔍 === ACTUAL PLAN JSON STRUCTURE DEBUG ==="
+          echo ""
+          echo "📂 Available JSON plans:"
+          ls -la canonical-plan/*.json || echo "No JSON files found"
+          echo ""
           
-          # Run unified OPA validation (auto-detects and validates all services)
-          echo "🔍 Running policy validation..."
-          opa eval -d ../opa-policies/ \
-            -i canonical-plan/plan.json \
-            "data.terraform.main.deny" \
-            --format pretty > opa-result.txt || true
+          for json_file in canonical-plan/*.json; do
+            if [ ! -f "$json_file" ]; then
+              continue
+            fi
+            
+            plan_name=$(basename "$json_file" .json)
+            echo "📄 === PLAN: $plan_name ==="
+            echo "📊 File size: $(wc -c < "$json_file") bytes"
+            echo ""
+            
+            echo "🔍 Top-level structure:"
+            jq 'keys' "$json_file" 2>/dev/null || echo "Failed to parse JSON"
+            echo ""
+            
+            echo "🔍 Resource changes summary:"
+            echo "   Total resource changes: $(jq -r '.resource_changes | length' "$json_file" 2>/dev/null || echo "0")"
+            echo "   Resource types:"
+            jq -r '.resource_changes[]?.type' "$json_file" 2>/dev/null | sort | uniq -c || echo "   No types found"
+            echo ""
+            
+            echo "🔍 First few resource changes (structure):"
+            jq -r '.resource_changes[0:2] | .[] | {type: .type, actions: .change.actions, address: .address, after_sample: .change.after}' "$json_file" 2>/dev/null || echo "   No resource changes found"
+            echo ""
+            
+            echo "🔍 S3-related resources:"
+            jq -r '.resource_changes[] | select(.type | contains("s3")) | {type: .type, address: .address, actions: .change.actions, tags: .change.after.tags}' "$json_file" 2>/dev/null || echo "   No S3 resources found"
+            echo ""
+            
+            # Show first 50 lines of the actual JSON for manual inspection
+            echo "🔍 First 50 lines of actual JSON content:"
+            echo '```json'
+            head -50 "$json_file"
+            echo ""
+            echo "... (truncated)"
+            echo '```'
+            echo ""
+            
+            # Show specific sections
+            echo "🔍 Planned values (if present):"
+            jq -r '.planned_values.root_module.resources[0:2] | .[] | {type: .type, address: .address}' "$json_file" 2>/dev/null || echo "   No planned values found"
+            echo ""
+            
+            echo "🔍 Configuration (if present):"
+            jq -r '.configuration.root_module.resources[0:2] | .[] | {type: .type, address: .address}' "$json_file" 2>/dev/null || echo "   No configuration found"
+            echo ""
+            
+            echo "=====================================\n"
+          done
           
-          # Count violations by severity  
-          violations_json=$(opa eval -d ../opa-policies/ \
-            -i canonical-plan/plan.json \
-            "data.terraform.main.deny" \
-            --format json 2>/dev/null || echo '{"result":[{"expressions":[{"value":{}}]}]}')
+          echo "💡 This debug output shows the actual structure of your Terraform plan JSON files."
+          echo "   Compare this with your test files to ensure they match the expected format."
+
+      # ===== DEBUG: Check OPA Syntax Errors =====
+      - name: 🔍 Debug OPA Syntax Errors
+        if: steps.plan.outputs.opa_plan_ready == 'true'
+        working-directory: source-repo
+        run: |
+          echo "🔍 === OPA SYNTAX ERROR DEBUG ==="
+          echo ""
+          echo "📁 OPA policies directory structure:"
+          find ../opa-polices/ -name "*.rego" | head -10
+          echo ""
           
-          # Parse violations from OPA object format - violations are stored as keys in the object
-          total_violations=$(echo "$violations_json" | jq -r '
-            [.result[0].expressions[0].value // {} | 
-             if type == "object" then keys[] else empty end |
-             try fromjson catch empty |
-             select(type == "object")] | length' 2>/dev/null || echo "0")
-             
-          critical_violations=$(echo "$violations_json" | jq -r '
-            [.result[0].expressions[0].value // {} | 
-             if type == "object" then keys[] else empty end |
-             try fromjson catch empty |
-             select(type == "object" and .severity == "critical")] | length' 2>/dev/null || echo "0")
-             
-          high_violations=$(echo "$violations_json" | jq -r '
-            [.result[0].expressions[0].value // {} | 
-             if type == "object" then keys[] else empty end |
-             try fromjson catch empty |
-             select(type == "object" and .severity == "high")] | length' 2>/dev/null || echo "0")
-             
-          medium_violations=$(echo "$violations_json" | jq -r '
-            [.result[0].expressions[0].value // {} | 
-             if type == "object" then keys[] else empty end |
-             try fromjson catch empty |
-             select(type == "object" and .severity == "medium")] | length' 2>/dev/null || echo "0")
-             
-          low_violations=$(echo "$violations_json" | jq -r '
-            [.result[0].expressions[0].value // {} | 
-             if type == "object" then keys[] else empty end |
-             try fromjson catch empty |
-             select(type == "object" and .severity == "low")] | length' 2>/dev/null || echo "0")
+          echo "🔍 Testing OPA syntax on each policy file:"
+          for rego_file in $(find ../opa-polices/ -name "*.rego"); do
+            echo "  Testing: $rego_file"
+            opa fmt "$rego_file" --diff 2>&1 || echo "    ❌ Syntax error in $rego_file"
+          done
+          echo ""
           
-          # Ensure variables are numeric (default to 0 if empty, remove any whitespace/newlines)
+          echo "🔍 Full OPA error output when loading policies:"
+          opa eval -d ../opa-polices/ "data.terraform.main" --format json 2>&1 || true
+          echo ""
+          
+          echo "🔍 Testing individual policy directories:"
+          for dir in $(find ../opa-polices/ -type d -name "*"); do
+            if [ -f "$dir"/*.rego ]; then
+              echo "  Testing directory: $dir"
+              opa eval -d "$dir" "data" --format json 2>&1 | head -5 || true
+              echo ""
+            fi
+          done
+          
+          echo "🔍 Checking for import syntax compatibility:"
+          grep -r "import rego.v1" ../opa-polices/ || echo "  No rego.v1 imports found"
+          echo ""
+          
+          echo "🔍 OPA version being used:"
+          opa version
           total_violations=$(echo "${total_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
           critical_violations=$(echo "${critical_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
           high_violations=$(echo "${high_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
@@ -528,20 +796,37 @@ jobs:
               comment += `ℹ️ No deployments found or no changes detected\n\n`;
             }
             
-            // OPA results
+            // Enhanced OPA results for multiple plans
             const validation = '${{ steps.opa.outputs.validation_status }}';
             const violations = '${{ steps.opa.outputs.total_violations }}';
+            const plansValidated = '${{ steps.opa.outputs.plans_validated }}';
+            const criticalViolations = '${{ steps.opa.outputs.critical_violations }}';
+            const highViolations = '${{ steps.opa.outputs.high_violations }}';
+            const mediumViolations = '${{ steps.opa.outputs.medium_violations }}';
+            const lowViolations = '${{ steps.opa.outputs.low_violations }}';
             
             comment += `### 🛡️ OPA Policy Validation\n`;
             if (validation === 'passed') {
-              comment += `✅ **Status**: PASSED - No policy violations\n\n`;
+              comment += `✅ **Status**: PASSED - No policy violations across ${plansValidated || 1} plan(s)\n`;
+              comment += `🔒 **Security**: All plans meet security requirements\n\n`;
             } else if (validation === 'failed') {
               comment += `❌ **Status**: FAILED\n`;
-              comment += `- **Violations**: ${violations}\n\n`;
+              comment += `- **Total Violations**: ${violations} across ${plansValidated || 1} plan(s)\n`;
+              comment += `- **Breakdown**: 🔴 ${criticalViolations || 0} Critical | 🟠 ${highViolations || 0} High | 🟡 ${mediumViolations || 0} Medium | 🟢 ${lowViolations || 0} Low\n\n`;
               try {
-                const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
-                comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
-              } catch (e) {}
+                const opaResults = fs.readFileSync('source-repo/opa-detailed-results.md', 'utf8');
+                comment += `<details>\n<summary>📋 View Detailed Validation Results</summary>\n\n`;
+                comment += opaResults;
+                comment += `\n</details>\n\n`;
+              } catch (e) {
+                console.log('No detailed OPA results found, trying legacy format...');
+                try {
+                  const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
+                  comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
+                } catch (e2) {
+                  console.log('No OPA results file found');
+                }
+              }
             } else if ('${{ steps.plan.outputs.opa_plan_ready }}' === 'false') {
               comment += `⚠️ **Status**: SKIPPED - No successful plans for validation\n\n`;
             }
@@ -551,7 +836,7 @@ jobs:
             
             comment += `\n---\n`;
             comment += `🤖 *Centralized Controller* | `;
-            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            comment += `[View Run](https://github.com/mmctech/mmctech-aws-tf-controller-poc/actions/runs/${{ github.run_id }})`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
@@ -664,8 +949,8 @@ jobs:
             
             // Dispatch apply event to this same workflow
             await github.rest.repos.createDispatchEvent({
-              owner: 'Terraform-centilazed-pipline',
-              repo: 'centerlized-pipline-',
+              owner: 'mmctech',
+              repo: 'mmctech-aws-tf-controller-poc',
               event_type: 'terraform_apply',
               client_payload: {
                 source_owner: '${{ github.event.client_payload.source_owner }}',
@@ -784,7 +1069,7 @@ jobs:
             
             comment += `\n---\n`;
             comment += `🤖 *Centralized Controller - Apply* | `;
-            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            comment += `[View Run](https://github.com/mmctech/mmctech-aws-tf-controller-poc/actions/runs/${{ github.run_id }})`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
