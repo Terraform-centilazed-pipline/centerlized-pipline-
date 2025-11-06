@@ -249,6 +249,14 @@ class OPAValidator:
         for services in services_results:
             all_services.update(services)
         
+        # Collect all violations for detailed reporting
+        all_violations = []
+        for result in validation_results:
+            if result.get('success') and result.get('violations'):
+                for violation in result['violations']:
+                    violation['source_plan'] = result['file_name']
+                    all_violations.append(violation)
+        
         report = {
             'summary': {
                 'total_plans': total_plans,
@@ -257,12 +265,27 @@ class OPAValidator:
                 'total_violations': total_violations,
                 'violations_by_severity': aggregate_violations,
                 'services_detected': sorted(list(all_services)),
-                'validation_status': 'passed' if total_violations == 0 else 'failed'
+                'validation_status': self._determine_validation_status(total_violations, successful_validations, total_plans)
             },
+            'violations': all_violations,
             'plan_results': validation_results
         }
         
         return report
+    
+    def _determine_validation_status(self, total_violations: int, successful_validations: int, total_plans: int) -> str:
+        """Determine the overall validation status"""
+        if total_plans == 0:
+            return 'skipped'
+        elif successful_validations < total_plans:
+            # If any validation failed (OPA command errors), mark as failed
+            return 'failed'
+        elif total_violations > 0:
+            # If all validations succeeded but found violations, mark as failed
+            return 'failed'
+        else:
+            # All validations succeeded with no violations
+            return 'passed'
     
     def save_report(self, report: Dict[str, Any], output_file: str):
         """Save the validation report to a JSON file"""
@@ -297,6 +320,14 @@ class OPAValidator:
         
         status_emoji = "✅" if summary['validation_status'] == 'passed' else "❌"
         logger.info(f"\nValidation Status: {status_emoji} {summary['validation_status'].upper()}")
+        
+        # Additional context for failed status
+        if summary['validation_status'] == 'failed':
+            if summary['failed_validations'] > 0:
+                logger.info(f"   Reason: {summary['failed_validations']} validation(s) had errors")
+            elif summary['total_violations'] > 0:
+                logger.info(f"   Reason: {summary['total_violations']} policy violation(s) found")
+        
         logger.info("="*60)
     
     def validate_all(self, output_file: Optional[str] = None) -> Dict[str, Any]:

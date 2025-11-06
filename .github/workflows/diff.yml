@@ -66,7 +66,7 @@ jobs:
           path: source-repo
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Checkout OPA Polices
+      - name: Checkout OPA Policies
         uses: actions/checkout@v4
         with:
           repository: mmctech/mmctech-aws-tf-opa-policies
@@ -401,7 +401,7 @@ jobs:
               echo "validation_status=passed" >> $GITHUB_OUTPUT
               echo ""
               echo "✅ All policies passed - deployment authorized!"
-            elif [ "$validation_exit_code" -eq 1 ]; then
+            elif [ "$validation_exit_code" -eq 1 ] || [ "$validation_exit_code" -eq 2 ]; then
               echo "validation_status=failed" >> $GITHUB_OUTPUT
               echo ""
               echo "❌ Validation failed: $total_violations violations found"
@@ -412,10 +412,6 @@ jobs:
                 echo "📋 Violation Details:"
                 jq -r '.violations[] | "  - [\(.severity)] \(.message)"' opa-results.json || true
               fi
-            elif [ "$validation_exit_code" -eq 2 ]; then
-              echo "validation_status=skipped" >> $GITHUB_OUTPUT
-              echo ""
-              echo "⚠️ OPA validation skipped - no plans to validate"
             else
               echo "validation_status=error" >> $GITHUB_OUTPUT
               echo ""
