@@ -614,8 +614,7 @@ Please fix the errors and push to a new branch.
         Copy policy JSON files referenced in tfvars to the destination directory.
         Maintains the same directory structure so Terraform can find them.
         """
-        import re
-        
+        print(f"🔍 ENTERING _copy_referenced_policy_files for: {tfvars_file}")
         debug_print(f"🔍 _copy_referenced_policy_files called for: {tfvars_file}")
         debug_print(f"   Dest dir: {dest_dir}")
         debug_print(f"   Working dir: {self.working_dir}")
@@ -804,24 +803,6 @@ Please fix the errors and push to a new branch.
             if key in deployment_info and deployment_info[key] != value:
                 return False
         return True
-    
-    def _copy_referenced_policy_files(self, tfvars_file: Path, dest_dir: Path, deployment: Dict):
-        """Copy policy JSON files referenced in tfvars to destination directory"""
-        try:
-            with open(tfvars_file, 'r') as f:
-                content = f.read()
-            
-            # Look for JSON file references
-            json_refs = re.findall(r'["\']([^"\']*/[^"\']*.json)["\']', content)
-            for json_ref in json_refs:
-                json_path = tfvars_file.parent / json_ref
-                if json_path.exists():
-                    dest_json = dest_dir / json_ref
-                    dest_json.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(json_path, dest_json)
-                    debug_print(f"Copied policy file: {json_path} -> {dest_json}")
-        except Exception as e:
-            debug_print(f"Error copying policy files: {e}")
     
     def execute_deployments(self, deployments: List[Dict], action: str = "plan") -> Dict:
         """Execute terraform deployments - sequential processing"""
