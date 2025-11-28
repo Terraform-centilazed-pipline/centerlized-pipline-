@@ -524,15 +524,27 @@ Please fix the errors and push to a new branch.
                 success = result['returncode'] == 0
                 has_changes = True
             
+            # Print detailed error if command failed
+            if not success:
+                print(f"\n❌ Terraform {action} failed with exit code {result['returncode']}")
+                print(f"📋 Error output:")
+                print(result.get('stderr', result.get('output', 'No error output available')))
+                if DEBUG:
+                    print(f"\n📋 Full stdout:")
+                    print(result.get('stdout', 'No stdout available'))
+            
             return {
                 'deployment': deployment,
                 'success': success,
                 'has_changes': has_changes,
                 'output': result['output'],
+                'stderr': result.get('stderr', ''),
+                'stdout': result.get('stdout', ''),
                 'backend_key': backend_key,
                 'services': services,
                 'action': action,
                 'error': None if success else f"{action} failed with exit code {result['returncode']}",
+                'error_detail': result.get('stderr', result.get('output', '')) if not success else None,
                 'orchestrator_version': ORCHESTRATOR_VERSION
             }
             

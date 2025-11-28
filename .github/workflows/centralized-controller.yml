@@ -161,7 +161,7 @@ jobs:
           echo "🔍 Running discovery for plan mode..."
           echo "Changed files: ${{ steps.changed-files.outputs.files }}"
           echo "Changed files count: ${{ steps.changed-files.outputs.count }}"
-          python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py discover \
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
             --changed-files "${{ steps.changed-files.outputs.files }}" \
             --output-summary deployments.json \
             --debug
@@ -192,7 +192,7 @@ jobs:
           echo "🔍 Running discovery for apply mode..."
           echo "Apply mode - using changed files: ${{ github.event.client_payload.changed_files || github.event.client_payload.files }}"
           # For apply mode, get changed files from the merge commit
-          python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py discover \
+          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
             --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
             --output-summary deployments.json \
             --debug
@@ -379,7 +379,7 @@ jobs:
           # This handles multiple deployments from different accounts properly
           set +e  # Don't exit on error - we want to show results even if some plans fail
           python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py plan \
-            --changed-files "${{ steps.changed-files.outputs.files }}" \
+            --deployments-json deployments.json \
             --output-summary plan-results.json \
             --debug
           
@@ -392,7 +392,7 @@ jobs:
             total=$(jq -r '.summary.total // 0' plan-results.json)
             successful=$(jq -r '.summary.successful // 0' plan-results.json)
             failed=$(jq -r '.summary.failed // 0' plan-results.json)
-            has_changes=$(jq -r 'if (.successful | length > 0) then (.successful[] | select(.has_changes == true)) else false end' plan-results.json | jq -s 'length > 0')
+            has_changes=$(jq -r 'if (.successful | length > 0) and ([.successful[] | select(.has_changes == true)] | length > 0) then "true" else "false" end' plan-results.json)
             
             echo "📊 Plan Results: $successful/$total successful, $failed failed"
             
@@ -428,6 +428,11 @@ jobs:
               exit 0
             else
               echo "❌ No plans were successful"
+              echo ""
+              echo "🔍 Showing error details from plan-results.json:"
+              if [ -f plan-results.json ]; then
+                jq '.' plan-results.json || cat plan-results.json
+              fi
               exit 1
             fi
           else
@@ -1086,7 +1091,7 @@ jobs:
           # Use the deployment orchestrator to run applies
           set +e  # Don't exit on error - we want to show results even if some applies fail
           python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py apply \
-            --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
+            --deployments-json deployments.json \
             --output-summary apply-results.json \
             --debug
           
