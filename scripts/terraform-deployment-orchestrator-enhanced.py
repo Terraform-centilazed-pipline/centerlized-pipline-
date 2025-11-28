@@ -487,7 +487,14 @@ Please fix the errors and push to a new branch.
             debug_print(f"Copied {tfvars_file} -> {tfvars_dest}")
             
             # Copy policy JSON files referenced in tfvars (if any)
-            self._copy_referenced_policy_files(tfvars_file, main_dir, deployment)
+            try:
+                debug_print(f"About to call _copy_referenced_policy_files")
+                self._copy_referenced_policy_files(tfvars_file, main_dir, deployment)
+                debug_print(f"Finished calling _copy_referenced_policy_files")
+            except Exception as copy_err:
+                print(f"⚠️ Exception in _copy_referenced_policy_files: {copy_err}")
+                import traceback
+                traceback.print_exc()
             
             # Initialize Terraform with dynamic backend
             init_cmd = [
