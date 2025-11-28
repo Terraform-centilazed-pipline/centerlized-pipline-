@@ -167,8 +167,8 @@ module "kms" {
   # Version 2.0 - Custom rotation period (90-2560 days)
   rotation_period_in_days = try(each.value.rotation_period_in_days, null)
   
-  # Version 2.0 - Lifecycle protection
-  prevent_destroy = try(each.value.prevent_destroy, false)
+  # Version 2.0 - Lifecycle protection (handled by module with static values)
+  prevent_destroy = try(each.value.prevent_destroy, true)
   ignore_changes_attributes = try(each.value.ignore_changes_attributes, [])
   
   # Version 2.0 - BYOK (Bring Your Own Key)
