@@ -69,7 +69,7 @@ locals {
   # ===========================
   # Lambda Functions Configuration
   # ===========================
-  merged_lambda_functions = merge(
+ /*  merged_lambda_functions = merge(
     try(local.yaml_config.lambda_functions, {}),
     try(var.lambda_functions, {})
   )
@@ -83,12 +83,12 @@ locals {
       # Set defaults for service integration
       tags = merge(var.common_tags, try(v.tags, {}))
     })
-  }
+  } */
   
   # ===========================
   # SQS Queues Configuration  
   # ===========================
-  merged_sqs_queues = merge(
+/*   merged_sqs_queues = merge(
     try(local.yaml_config.sqs_queues, {}),
     try(var.sqs_queues, {})
   )
@@ -98,7 +98,7 @@ locals {
     for k, v in local.merged_sqs_queues : k => merge(v, {
       tags = merge(var.common_tags, try(v.tags, {}))
     })
-  }
+  } */
   
   # ===========================
   # IAM Configuration

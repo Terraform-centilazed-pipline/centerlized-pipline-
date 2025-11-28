@@ -379,7 +379,7 @@ jobs:
           # This handles multiple deployments from different accounts properly
           set +e  # Don't exit on error - we want to show results even if some plans fail
           python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py plan \
-            --deployments-json deployments.json \
+            --changed-files "${{ steps.changed-files.outputs.files }}" \
             --output-summary plan-results.json \
             --debug
           
@@ -1091,7 +1091,7 @@ jobs:
           # Use the deployment orchestrator to run applies
           set +e  # Don't exit on error - we want to show results even if some applies fail
           python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py apply \
-            --deployments-json deployments.json \
+            --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
             --output-summary apply-results.json \
             --debug
           
