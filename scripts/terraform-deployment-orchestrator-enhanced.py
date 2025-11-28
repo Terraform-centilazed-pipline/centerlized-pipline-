@@ -518,7 +518,10 @@ Please fix the errors and push to a new branch.
             
             # Run terraform action
             if action == "plan":
-                cmd = ['plan', '-detailed-exitcode', '-input=false', '-var-file=terraform.tfvars', '-no-color']
+                # Save plan to file for JSON conversion
+                plan_filename = f"{deployment['account_name']}-{deployment['project']}.tfplan"
+                plan_file = main_dir / plan_filename
+                cmd = ['plan', '-detailed-exitcode', '-input=false', '-var-file=terraform.tfvars', '-no-color', f'-out={plan_filename}']
             elif action == "apply":
                 cmd = ['apply', '-auto-approve', '-input=false', '-var-file=terraform.tfvars', '-no-color']
             else:
@@ -530,6 +533,24 @@ Please fix the errors and push to a new branch.
             if action == "plan":
                 success = result['returncode'] in [0, 2]  # 0=no changes, 2=changes detected
                 has_changes = result['returncode'] == 2
+                
+                # Generate JSON plan for OPA validation if plan succeeded
+                if success and plan_file.exists():
+                    json_dir = self.working_dir / "terraform-json"
+                    json_dir.mkdir(exist_ok=True)
+                    
+                    json_filename = f"{deployment['account_name']}-{deployment['project']}.json"
+                    json_file = json_dir / json_filename
+                    
+                    show_result = self._run_terraform_command(['show', '-json', plan_filename], main_dir)
+                    if show_result['returncode'] == 0:
+                        with open(json_file, 'w') as f:
+                            f.write(show_result['stdout'])
+                        print(f"📄 Generated JSON plan: {json_file}")
+                        debug_print(f"JSON plan saved to: {json_file}")
+                    else:
+                        print(f"⚠️ Warning: Failed to generate JSON plan for {deployment['account_name']}")
+                        debug_print(f"terraform show -json failed: {show_result.get('stderr', 'unknown error')}")
             else:
                 success = result['returncode'] == 0
                 has_changes = True
