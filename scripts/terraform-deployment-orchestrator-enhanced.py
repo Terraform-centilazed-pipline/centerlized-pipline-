@@ -769,21 +769,40 @@ Please fix the errors and push to a new branch.
                             'environment': self.accounts_config['accounts'][account_id].get('environment', 'unknown')
                         }
                 
-                # Simple structure: Accounts/account-name/file.tfvars
+                # Simple structure: Accounts/project-name/file.tfvars
                 elif len(path_parts) > accounts_index + 1:
-                    account_name = path_parts[accounts_index + 1]
+                    project = path_parts[accounts_index + 1]
                     region = "us-east-1"
                     
-                    account_id = None
-                    for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
-                        if acc_info.get('account_name') == account_name:
-                            account_id = acc_id
-                            region = acc_info.get('region', region)
-                            break
+                    # Extract real account_name from tfvars content
+                    account_name = self._extract_account_name_from_tfvars(tfvars_file)
                     
-                    if not account_id:
-                        account_id = account_name
-                        debug_print(f"No account config found for {account_name}, using as account_id")
+                    # If not found in tfvars, try accounts config
+                    if not account_name:
+                        account_id = None
+                        for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
+                            if acc_info.get('account_name') == project:
+                                account_id = acc_id
+                                account_name = acc_info.get('account_name')
+                                region = acc_info.get('region', region)
+                                break
+                        
+                        if not account_name:
+                            account_name = project
+                            account_id = project
+                            debug_print(f"No account config found for {project}, using project name as account")
+                    else:
+                        # Find account_id from account_name
+                        account_id = None
+                        for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
+                            if acc_info.get('account_name') == account_name:
+                                account_id = acc_id
+                                region = acc_info.get('region', region)
+                                break
+                        
+                        if not account_id:
+                            account_id = account_name
+                            debug_print(f"No account_id found for {account_name}, using account_name")
                     
                     return {
                         'file': str(tfvars_file),
