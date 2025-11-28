@@ -951,8 +951,7 @@ jobs:
               comment += `ℹ️ No deployments found or no changes detected\n\n`;
             }
             
-            // OPA results
-            const validation = '${{ steps.opa.outputs.validation_status }}';
+            // OPA results - using validation variable already declared at top
             const violations = '${{ steps.opa.outputs.total_violations }}';
             const plansValidated = '${{ steps.opa.outputs.plans_validated }}';
             const criticalViolations = '${{ steps.opa.outputs.critical_violations }}';
@@ -972,13 +971,13 @@ jobs:
             } else if (validation === 'failed') {
               comment += `❌ **Status**: **FAILED** - Policy violations detected\n\n`;
               
-              const total = parseInt(violations || 0);
+              const totalViolations = parseInt(violations || 0);
               const critical = parseInt(criticalViolations || 0);
               const high = parseInt(highViolations || 0);
               const medium = parseInt(mediumViolations || 0);
               const low = parseInt(lowViolations || 0);
               
-              comment += `**⚠️ Violations Summary** (${total} total across ${plansValidated || 1} plan(s)):\n\n`;
+              comment += `**⚠️ Violations Summary** (${totalViolations} total across ${plansValidated || 1} plan(s)):\n\n`;
               comment += `| Severity | Count | Status |\n`;
               comment += `|----------|-------|--------|\n`;
               if (critical > 0) comment += `| 🔴 **Critical** | **${critical}** | ⛔ Must Fix |\n`;
