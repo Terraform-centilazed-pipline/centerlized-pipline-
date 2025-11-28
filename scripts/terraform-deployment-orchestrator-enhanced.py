@@ -472,11 +472,15 @@ Please fix the errors and push to a new branch.
             
             # Initialize Terraform with dynamic backend
             # -upgrade flag ensures latest module versions are downloaded from GitHub
+            # -reconfigure forces backend reconfiguration and ignores cached state
             init_cmd = [
-                'init', '-input=false', '-upgrade',
+                'init', '-input=false', '-upgrade', '-reconfigure',
                 f'-backend-config=key={backend_key}',
                 f'-backend-config=region=us-east-1'
             ]
+            
+            print(f"🔄 Initializing Terraform with backend key: {backend_key}")
+            print(f"🔧 Using -reconfigure to ensure fresh state download")
             
             init_result = self._run_terraform_command(init_cmd, main_dir)
             if init_result['returncode'] != 0:
@@ -491,12 +495,21 @@ Please fix the errors and push to a new branch.
                     'action': action
                 }
             
+            # Run terraform refresh first to sync state with AWS reality
+            print(f"🔄 Refreshing state from AWS to detect drift...")
+            refresh_result = self._run_terraform_command(['refresh', '-input=false', '-var-file=terraform.tfvars'], main_dir)
+            if refresh_result['returncode'] != 0:
+                print(f"⚠️ Warning: Refresh had issues (may be expected if resources deleted): {refresh_result['stderr'][:500]}")
+            else:
+                print(f"✅ State refreshed from AWS")
+            
             # Run terraform action
             if action == "plan":
                 # Save plan to file for JSON conversion
                 plan_filename = f"{deployment['account_name']}-{deployment['project']}.tfplan"
                 plan_file = main_dir / plan_filename
                 cmd = ['plan', '-detailed-exitcode', '-input=false', '-refresh=true', '-var-file=terraform.tfvars', '-no-color', f'-out={plan_filename}']
+                print(f"📋 Running terraform plan...")
             elif action == "apply":
                 cmd = ['apply', '-auto-approve', '-input=false', '-refresh=true', '-var-file=terraform.tfvars', '-no-color']
             else:
