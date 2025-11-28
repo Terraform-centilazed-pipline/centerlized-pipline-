@@ -213,13 +213,10 @@ class EnhancedTerraformOrchestrator:
             return []
 
     def _generate_dynamic_backend_key(self, deployment: Dict, services: List[str], tfvars_file: Path = None) -> str:
-        """Generate dynamic backend key with resource name: {account_name}/{service_part}/{resource_name}/{resource_name}.tfstate"""
+        """Generate dynamic backend key: {service}/{account_name}/{region}/{project}/terraform.tfstate"""
         account_name = deployment.get('account_name', 'unknown')
         project = deployment.get('project', 'unknown') 
         region = deployment.get('region', 'us-east-1')
-        
-        # Use full account name (not shortened)
-        # Example: arj-wkld-a-prd remains as arj-wkld-a-prd
         
         # Determine service part
         if len(services) == 0:
@@ -229,34 +226,11 @@ class EnhancedTerraformOrchestrator:
         else:
             service_part = "combined"
         
-        # Extract resource names from tfvars
-        resource_names = []
-        if tfvars_file and tfvars_file.exists():
-            resource_names = self._extract_resource_names_from_tfvars(tfvars_file, services)
+        # Standard backend key format: {service}/{account_name}/{region}/{project}/terraform.tfstate
+        # Example: s3/arj-wkld-a-prd/us-east-1/test-4-poc-1/terraform.tfstate
+        backend_key = f"{service_part}/{account_name}/{region}/{project}/terraform.tfstate"
         
-        # Build backend key with resource name (no duplicate service names)
-        if len(resource_names) == 1:
-            # Single resource - use resource name in path AND filename
-            # Pattern: {account_name}/{service_part}/{resource_name}/{resource_name}.tfstate
-            # Example: arj-wkld-a-prd/kms/encryption-key/encryption-key.tfstate
-            resource_name = resource_names[0]
-            backend_key = f"{account_name}/{service_part}/{resource_name}/{resource_name}.tfstate"
-            debug_print(f"Single resource backend key: {backend_key}")
-        elif len(resource_names) > 1:
-            # Multiple resources - use first resource name in path, terraform.tfstate as filename
-            # Pattern: {account_name}/{service_part}/{resource_name}/terraform.tfstate
-            # Example: arj-wkld-a-prd/s3/app-buckets/terraform.tfstate
-            resource_name = resource_names[0]
-            backend_key = f"{account_name}/{service_part}/{resource_name}/terraform.tfstate"
-            debug_print(f"Multiple resources backend key: {backend_key} (resources: {resource_names})")
-        else:
-            # No resource names detected - use project name as fallback
-            # Pattern: {account_name}/{service_part}/terraform.tfstate
-            # Example: arj-wkld-a-prd/kms/terraform.tfstate
-            backend_key = f"{account_name}/{service_part}/terraform.tfstate"
-            debug_print(f"Standard backend key (no resources): {backend_key}")
-        
-        debug_print(f"Generated backend key: {backend_key} (services: {services}, resources: {resource_names})")
+        debug_print(f"Generated backend key: {backend_key} (service: {service_part}, account: {account_name}, region: {region}, project: {project})")
         
         return backend_key
 
