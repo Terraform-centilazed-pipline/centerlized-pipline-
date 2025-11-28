@@ -154,7 +154,7 @@ module "s3" {
 module "kms" {
   for_each = local.processed_kms_keys
   
-  source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/KMS?ref=v2.0"
+  source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/KMS"
 
   # Key configuration
   description              = try(each.value.description, "KMS key for ${each.key}")
