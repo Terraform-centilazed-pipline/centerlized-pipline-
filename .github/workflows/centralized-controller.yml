@@ -71,7 +71,7 @@ jobs:
         with:
           repository: Terraform-centilazed-pipline/opa-poclies
           path: opa-policies
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: 🔍 Debug OPA Policies Structure
         run: |
