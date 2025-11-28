@@ -522,6 +522,15 @@ Please fix the errors and push to a new branch.
                 success = result['returncode'] in [0, 2]  # 0=no changes, 2=changes detected
                 has_changes = result['returncode'] == 2
                 
+                print(f"📊 Terraform Plan Exit Code: {result['returncode']}")
+                print(f"   ✅ Success: {success}")
+                print(f"   🔄 Has Changes: {has_changes}")
+                
+                # Double-check by looking at output
+                if not has_changes and ('will be created' in result['output'] or 'will be updated' in result['output'] or 'will be destroyed' in result['output']):
+                    print(f"⚠️ WARNING: Exit code was 0 but output shows changes! Forcing has_changes=True")
+                    has_changes = True
+                
                 # Generate JSON plan and markdown for OPA validation if plan succeeded
                 if success and plan_file.exists():
                     # Create JSON plan
@@ -537,6 +546,22 @@ Please fix the errors and push to a new branch.
                             f.write(show_result['stdout'])
                         print(f"📄 Generated JSON plan: {json_file}")
                         debug_print(f"JSON plan saved to: {json_file}")
+                        
+                        # Parse JSON to detect changes as backup method
+                        try:
+                            import json as json_module
+                            plan_data = json_module.loads(show_result['stdout'])
+                            resource_changes = plan_data.get('resource_changes', [])
+                            actual_changes = [rc for rc in resource_changes if rc.get('change', {}).get('actions', []) != ['no-op']]
+                            
+                            if actual_changes and not has_changes:
+                                print(f"⚠️ OVERRIDE: JSON shows {len(actual_changes)} resource changes but exit code was 0")
+                                print(f"   Setting has_changes=True based on JSON analysis")
+                                has_changes = True
+                            
+                            print(f"📊 JSON Analysis: {len(actual_changes)} resources with changes out of {len(resource_changes)} total")
+                        except Exception as parse_err:
+                            print(f"⚠️ Could not parse JSON plan for change detection: {parse_err}")
                     else:
                         print(f"⚠️ Warning: Failed to generate JSON plan for {deployment['account_name']}")
                         debug_print(f"terraform show -json failed: {show_result.get('stderr', 'unknown error')}")
