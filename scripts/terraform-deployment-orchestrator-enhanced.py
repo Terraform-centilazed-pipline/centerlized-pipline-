@@ -534,8 +534,9 @@ Please fix the errors and push to a new branch.
                 success = result['returncode'] in [0, 2]  # 0=no changes, 2=changes detected
                 has_changes = result['returncode'] == 2
                 
-                # Generate JSON plan for OPA validation if plan succeeded
+                # Generate JSON plan and markdown for OPA validation if plan succeeded
                 if success and plan_file.exists():
+                    # Create JSON plan
                     json_dir = self.working_dir / "terraform-json"
                     json_dir.mkdir(exist_ok=True)
                     
@@ -551,6 +552,28 @@ Please fix the errors and push to a new branch.
                     else:
                         print(f"⚠️ Warning: Failed to generate JSON plan for {deployment['account_name']}")
                         debug_print(f"terraform show -json failed: {show_result.get('stderr', 'unknown error')}")
+                    
+                    # Create markdown plan for PR comments
+                    markdown_dir = self.working_dir / "plan-markdown"
+                    markdown_dir.mkdir(exist_ok=True)
+                    
+                    markdown_filename = f"{deployment['account_name']}-{deployment['project']}.md"
+                    markdown_file = markdown_dir / markdown_filename
+                    
+                    show_md_result = self._run_terraform_command(['show', plan_filename], main_dir)
+                    if show_md_result['returncode'] == 0:
+                        with open(markdown_file, 'w') as f:
+                            f.write(f"## Terraform Plan: {deployment['account_name']}/{deployment['project']}\n\n")
+                            f.write(f"**Backend Key:** `{backend_key}`\n\n")
+                            f.write(f"**Services:** {', '.join(services)}\n\n")
+                            f.write("```terraform\n")
+                            f.write(show_md_result['stdout'])
+                            f.write("\n```\n")
+                        print(f"📝 Generated markdown plan: {markdown_file}")
+                        debug_print(f"Markdown plan saved to: {markdown_file}")
+                    else:
+                        print(f"⚠️ Warning: Failed to generate markdown plan for {deployment['account_name']}")
+                        debug_print(f"terraform show failed: {show_md_result.get('stderr', 'unknown error')}")
             else:
                 success = result['returncode'] == 0
                 has_changes = True
