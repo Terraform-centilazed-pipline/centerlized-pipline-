@@ -1275,6 +1275,10 @@ jobs:
           script: |
             console.log('🚀 Triggering Terraform Apply workflow...');
             
+            // Get the changed files from the original payload
+            const changedFiles = '${{ github.event.client_payload.changed_files || github.event.client_payload.files }}';
+            console.log('📁 Changed files:', changedFiles);
+            
             // Dispatch apply event to this same workflow
             await github.rest.repos.createDispatchEvent({
               owner: 'Terraform-centilazed-pipline',
@@ -1285,7 +1289,9 @@ jobs:
                 source_repo: '${{ github.event.client_payload.source_repo }}',
                 pr_number: ${{ github.event.client_payload.pr_number }},
                 pr_url: '${{ github.event.client_payload.pr_url }}',
+                pr_author: '${{ github.event.client_payload.pr_author || github.event.client_payload.triggered_by }}',
                 merge_commit_sha: '${{ steps.merge.outputs.merge_sha }}',
+                changed_files: changedFiles,
                 action: 'apply',
                 merged: 'true'
               }
@@ -1349,62 +1355,140 @@ jobs:
           script: |
             const fs = require('fs');
             
-            let comment = `## 🚀 Terraform Apply Results\n\n`;
-            comment += `**Merged PR**: [#${{ github.event.client_payload.pr_number }}](https://github.com/${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}/pull/${{ github.event.client_payload.pr_number }})\n`;
-            comment += `**Applied to**: \`main\` branch\n\n`;
-            
-            const total = '${{ steps.apply.outputs.total_deployments }}';
+            const applyTotal = '${{ steps.apply.outputs.total_deployments }}';
             const successful = '${{ steps.apply.outputs.successful_applies }}';
             const failed = '${{ steps.apply.outputs.failed_applies }}';
+            const prAuthor = '${{ github.event.client_payload.pr_author }}';
             
-            if (total && total !== '0') {
-              comment += `### 📊 Apply Summary\n`;
-              comment += `| Metric | Count |\n`;
+            let comment = `## 🚀 Terraform Apply Results\n\n`;
+            
+            // Status banner
+            const applySuccess = failed === '0' && successful !== '0';
+            const statusIcon = applySuccess ? '✅' : '❌';
+            const statusColor = applySuccess ? '🟢' : '🔴';
+            const statusText = applySuccess ? '**DEPLOYED**' : '**FAILED**';
+            
+            comment += `> ${statusIcon} **Deployment Status**: ${statusColor} ${statusText}\n`;
+            comment += `> 📦 **Source**: \`${{ github.event.client_payload.source_repo }}\`\n`;
+            comment += `> 🔀 **PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
+            comment += `> 👤 **Deployed by**: @${prAuthor}\n`;
+            comment += `\n`;
+            comment += `---\n\n`;
+            
+            if (applyTotal && applyTotal !== '0') {
+              // Apply Summary
+              comment += `### 📊 Deployment Summary\n\n`;
+              comment += `| Metric | Value |\n`;
               comment += `|--------|-------|\n`;
-              comment += `| 📋 Total Deployments | ${total} |\n`;
-              comment += `| ✅ Successful Applies | ${successful} |\n`;
-              comment += `| ❌ Failed Applies | ${failed} |\n\n`;
+              comment += `| 📋 Total Deployments | **${applyTotal}** |\n`;
+              comment += `| ✅ Successful | **${successful}** |\n`;
+              comment += `| ❌ Failed | **${failed}** |\n\n`;
               
-              // Add detailed results if available
+              // Detailed Results
               try {
                 const applyResults = fs.readFileSync('source-repo/apply-results.json', 'utf8');
                 const results = JSON.parse(applyResults);
                 
-                if (results.applies && results.applies.length > 0) {
-                  comment += `### 📋 Deployment Details\n`;
-                  comment += `| Deployment | Status | Message |\n`;
-                  comment += `|------------|--------|----------|\n`;
+                if (results.successful && results.successful.length > 0) {
+                  comment += `### ✅ Successfully Deployed\n\n`;
                   
-                  results.applies.forEach(apply => {
-                    const status = apply.status === 'success' ? '✅' : '❌';
-                    const message = apply.message || 'N/A';
-                    comment += `| ${apply.deployment} | ${status} | ${message.substring(0, 50)} |\n`;
+                  results.successful.forEach(result => {
+                    const dep = result.deployment;
+                    comment += `#### 🎯 ${dep.account_name} / ${dep.region} / ${dep.project}\n\n`;
+                    comment += `<table>\n`;
+                    comment += `<tr><td><b>🔑 Backend Key</b></td><td><code>${result.backend_key || 'N/A'}</code></td></tr>\n`;
+                    comment += `<tr><td><b>🏗️ Services</b></td><td>${result.services ? result.services.join(', ') : 'N/A'}</td></tr>\n`;
+                    comment += `</table>\n\n`;
+                    
+                    if (result.output) {
+                      const output = result.output;
+                      const applyMatch = output.match(/(\d+) added, (\d+) changed, (\d+) destroyed/);
+                      if (applyMatch) {
+                        const [_, added, changed, destroyed] = applyMatch;
+                        comment += `**Resources Applied**:\n`;
+                        if (added !== '0') comment += `- 🟢 ➕ **${added}** created\n`;
+                        if (changed !== '0') comment += `- 🟡 📝 **${changed}** updated\n`;
+                        if (destroyed !== '0') comment += `- 🔴 🗑️ **${destroyed}** destroyed\n`;
+                      }
+                    }
+                    
+                    comment += `\n✅ **Status**: Deployment completed successfully\n\n`;
+                    comment += `---\n\n`;
                   });
-                  comment += `\n`;
+                }
+                
+                if (results.failed && results.failed.length > 0) {
+                  comment += `### ❌ Failed Deployments\n\n`;
+                  
+                  results.failed.forEach(result => {
+                    const dep = result.deployment;
+                    comment += `#### 🚨 ${dep.account_name} / ${dep.region} / ${dep.project}\n\n`;
+                    comment += `**Error**: \`${result.error || 'Unknown error'}\`\n\n`;
+                    
+                    if (result.error_detail) {
+                      comment += `<details>\n<summary>🔍 Error Details</summary>\n\n`;
+                      comment += `\`\`\`\n${result.error_detail.substring(0, 1000)}\n\`\`\`\n`;
+                      if (result.error_detail.length > 1000) {
+                        comment += `\n... (truncated)\n`;
+                      }
+                      comment += `</details>\n\n`;
+                    }
+                    
+                    comment += `---\n\n`;
+                  });
                 }
               } catch (e) {
-                console.log('Could not read apply results:', e.message);
-              }
-              
-              if (failed === '0') {
-                comment += `\n✅ **All deployments applied successfully!**\n`;
-              } else {
-                comment += `\n⚠️ **Some deployments failed - check logs for details**\n`;
+                console.log('Could not parse apply results:', e.message);
+                comment += `⚠️ Apply completed but could not parse detailed results\n\n`;
               }
             } else {
-              comment += `ℹ️ No deployments were applied\n`;
+              comment += `ℹ️ No deployments were applied\n\n`;
             }
             
-            comment += `\n---\n`;
-            comment += `🤖 *Centralized Controller - Apply* | `;
-            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            // Footer
+            comment += `\n---\n\n`;
+            comment += `### 📚 Post-Deployment Information\n\n`;
             
+            if (applySuccess) {
+              comment += `✅ **Your infrastructure has been successfully deployed!**\n\n`;
+              comment += `**What just happened:**\n`;
+              comment += `1. ✅ Terraform applied ${successful} deployment(s) to production\n`;
+              comment += `2. 🎯 All resources are now in the desired state\n`;
+              comment += `3. 🔒 Changes are live and secured\n\n`;
+            } else {
+              comment += `❌ **Deployment encountered issues**\n\n`;
+              comment += `**Action required:**\n`;
+              comment += `1. 📝 Review the error details above\n`;
+              comment += `2. 🔧 Create a fix PR for the failing deployments\n`;
+              comment += `3. 🔄 The fixed deployment will be automatically applied\n\n`;
+            }
+            
+            comment += `<details>\n<summary>🔗 Useful Links</summary>\n\n`;
+            comment += `- 🤖 [View Apply Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})\n`;
+            comment += `- 📦 [View Merged PR](#${{ github.event.client_payload.pr_number }})\n`;
+            comment += `- 📖 [Terraform Modules](https://github.com/Terraform-centilazed-pipline/tf-module)\n`;
+            comment += `</details>\n\n`;
+            
+            comment += `---\n`;
+            comment += `🤖 *Automated by Centralized Terraform Controller* | `;
+            comment += `⏰ *Deployed at ${new Date().toISOString()}*`;
+            
+            // Post comment
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
               repo: '${{ github.event.client_payload.source_repo }}',
               issue_number: ${{ github.event.client_payload.pr_number }},
               body: comment
             });
+            
+            // Notify PR author with mention
+            if (applySuccess) {
+              console.log(`✅ Successfully deployed ${successful} deployment(s)`);
+              console.log(`📧 Notifying @${prAuthor} of successful deployment`);
+            } else {
+              console.log(`❌ Deployment failed: ${failed} failure(s)`);
+              console.log(`📧 Notifying @${prAuthor} of deployment failure`);
+            }
 
       # ===== CLEANUP: DELETE FEATURE BRANCH AFTER SUCCESSFUL APPLY =====
       - name: 🧹 Cleanup Feature Branch
