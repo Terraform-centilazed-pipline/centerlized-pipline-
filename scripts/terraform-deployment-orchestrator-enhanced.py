@@ -922,13 +922,22 @@ def _copy_referenced_policy_files_standalone(self, tfvars_file: Path, dest_dir: 
     """
     import re
     
+    debug_print(f"🔍 _copy_referenced_policy_files called for: {tfvars_file}")
+    debug_print(f"   Dest dir: {dest_dir}")
+    debug_print(f"   Working dir: {self.working_dir}")
+    
     try:
         with open(tfvars_file, 'r') as f:
             tfvars_content = f.read()
         
+        debug_print(f"   Tfvars content length: {len(tfvars_content)} bytes")
+        
         # Find all JSON file references: bucket_policy_file = "Accounts/xxx/yyy.json"
         json_pattern = r'["\']([Aa]ccounts/[^"\']+\.json)["\']'
         json_files = re.findall(json_pattern, tfvars_content)
+        
+        debug_print(f"   Regex pattern: {json_pattern}")
+        debug_print(f"   JSON files found by regex: {json_files}")
         
         if not json_files:
             debug_print("No policy JSON files referenced in tfvars")
