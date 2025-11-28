@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Terraform Deployment Orchestrator - Universal AWS Resource Manager
-Manages all AWS resource deployments (S3, IAM, KMS, VPC, EC2, etc.) across multiple accounts and regions using template-based approach
+Enhanced with:
+- Dynamic backend key generation based on detected services
+- No accounts.yaml dependency - all info extracted from tfvars
+- Enhanced PR comments with detailed resource information
 """
 
 import argparse
@@ -15,12 +18,6 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
-
-try:
-    import yaml
-except ImportError:
-    # Fallback for environments without PyYAML
-    yaml = None
 
 DEBUG = True
 
@@ -55,50 +52,470 @@ class TerraformOrchestrator:
             debug_print(f"Using default project root: {self.project_root}")
             debug_print(f"Working directory (source files): {self.working_dir}")
         
-        self.accounts_config = self._load_accounts_config()
+        # No need for accounts.yaml - all info is in tfvars files
+        # self.accounts_config = self._load_accounts_config()  # REMOVED
         self.templates_dir = self.project_root / "templates"
         
-    def _load_accounts_config(self) -> Dict:
-        """Load accounts configuration from accounts.yaml (optional)"""
-        accounts_file = self.project_root / "accounts.yaml"
-        if not accounts_file.exists():
-            debug_print(f"accounts.yaml not found at {accounts_file}, using defaults")
-            return {'accounts': {}, 's3_templates': {}, 'regions': {}, 'default_tags': {}}
+        # Service mapping for dynamic backend key generation
+        self.service_mapping = {
+            's3_buckets': 's3',
+            's3_bucket': 's3',
+            'kms_keys': 'kms',
+            'kms_key': 'kms',
+            'iam_roles': 'iam',
+            'iam_role': 'iam',
+            'iam_policies': 'iam',
+            'iam_policy': 'iam',
+            'iam_users': 'iam',
+            'lambda_functions': 'lambda',
+            'lambda_function': 'lambda',
+            'sqs_queues': 'sqs',
+            'sqs_queue': 'sqs',
+            'sns_topics': 'sns',
+            'sns_topic': 'sns',
+            'ec2_instances': 'ec2',
+            'ec2_instance': 'ec2',
+            'vpc_config': 'vpc',
+            'vpc': 'vpc',
+            'rds_instances': 'rds',
+            'rds_instance': 'rds',
+            'dynamodb_tables': 'dynamodb',
+            'dynamodb_table': 'dynamodb',
+            'cloudfront_distributions': 'cloudfront',
+            'cloudfront_distribution': 'cloudfront',
+            'route53_zones': 'route53',
+            'route53_zone': 'route53',
+            'elasticache_clusters': 'elasticache',
+            'security_groups': 'ec2',
+            'load_balancers': 'elb'
+        }
         
-        if yaml is None:
-            # Simple YAML parser fallback if PyYAML not available
-            return self._parse_simple_yaml(accounts_file)
-        else:
-            with open(accounts_file, 'r') as f:
-                return yaml.safe_load(f)
+        # Valid AWS regions for validation
+        self.valid_aws_regions = {
+            'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2',
+            'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1',
+            'eu-north-1', 'ap-southeast-1', 'ap-southeast-2', 
+            'ap-northeast-1', 'ap-northeast-2', 'ap-south-1',
+            'sa-east-1', 'ca-central-1', 'af-south-1', 'ap-east-1'
+        }
+        
+    def _detect_services_from_tfvars(self, tfvars_file: Path) -> List[str]:
+        """Detect services from tfvars file content for dynamic backend key generation"""
+        try:
+            with open(tfvars_file, 'r') as f:
+                content = f.read()
+            
+            detected_services = []
+            for tfvars_key, service in self.service_mapping.items():
+                # Look for service definitions in tfvars
+                if re.search(rf'\b{tfvars_key}\s*=', content):
+                    detected_services.append(service)
+                    debug_print(f"Detected service: {service} (from {tfvars_key})")
+            
+            # Remove duplicates and return
+            return list(set(detected_services))
+            
+        except Exception as e:
+            debug_print(f"Error detecting services from {tfvars_file}: {e}")
+            return []
     
-    def _parse_simple_yaml(self, file_path: Path) -> Dict:
-        """Simple YAML parser for basic accounts.yaml structure"""
-        config = {'accounts': {}, 's3_templates': {}, 'regions': {}, 'default_tags': {}}
-        current_section = None
-        current_account = None
+    def _extract_resource_names_from_tfvars(self, tfvars_file: Path, services: List[str]) -> List[str]:
+        """Extract actual resource names from tfvars for more descriptive state file names"""
+        try:
+            with open(tfvars_file, 'r') as f:
+                content = f.read()
+            
+            resource_names = []
+            
+            # Extract resource names based on detected services
+            for service in services:
+                if service == 's3':
+                    # Extract S3 bucket names
+                    bucket_names = re.findall(r'bucket_name\s*=\s*"([^"]+)"', content)
+                    resource_names.extend(bucket_names)
+                    
+                elif service == 'lambda':
+                    # Extract Lambda function names
+                    func_names = re.findall(r'function_name\s*=\s*"([^"]+)"', content)
+                    resource_names.extend(func_names)
+                    
+                elif service == 'iam':
+                    # Extract IAM role/policy names
+                    role_names = re.findall(r'role_name\s*=\s*"([^"]+)"', content)
+                    policy_names = re.findall(r'policy_name\s*=\s*"([^"]+)"', content)
+                    resource_names.extend(role_names + policy_names)
+                    
+                elif service == 'sqs':
+                    # Extract SQS queue names
+                    queue_names = re.findall(r'queue_name\s*=\s*"([^"]+)"', content)
+                    resource_names.extend(queue_names)
+                    
+                elif service == 'sns':
+                    # Extract SNS topic names
+                    topic_names = re.findall(r'topic_name\s*=\s*"([^"]+)"', content)
+                    resource_names.extend(topic_names)
+                    
+                elif service == 'kms':
+                    # Extract KMS key descriptions or aliases
+                    key_names = re.findall(r'key_description\s*=\s*"([^"]+)"', content)
+                    alias_names = re.findall(r'key_alias\s*=\s*"([^"]+)"', content)
+                    resource_names.extend(key_names + alias_names)
+                    
+                elif service == 'ec2':
+                    # Extract EC2 instance names
+                    instance_names = re.findall(r'instance_name\s*=\s*"([^"]+)"', content)
+                    resource_names.extend(instance_names)
+            
+            # Clean up names (remove special characters, make filesystem-safe)
+            cleaned_names = []
+            for name in resource_names:
+                # Keep only alphanumeric, hyphens, and underscores
+                clean_name = re.sub(r'[^a-zA-Z0-9\-_]', '-', name)
+                # Remove multiple consecutive hyphens
+                clean_name = re.sub(r'-+', '-', clean_name)
+                # Remove leading/trailing hyphens
+                clean_name = clean_name.strip('-')
+                if clean_name:
+                    cleaned_names.append(clean_name)
+            
+            debug_print(f"Extracted resource names: {cleaned_names}")
+            return cleaned_names
+            
+        except Exception as e:
+            debug_print(f"Error extracting resource names from {tfvars_file}: {e}")
+            return []
+    
+    def _generate_dynamic_backend_key(self, account_name: str, region: str, project: str, services: List[str], tfvars_file: Path = None) -> str:
+        """Generate dynamic backend key based on detected services and resource names"""
         
-        with open(file_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
+        # Determine service part based on detected services
+        if len(services) == 0:
+            # No services detected, keep original 's3' format
+            service_part = "s3"
+            state_filename = "terraform.tfstate"
+        elif len(services) == 1:
+            # Single service - use service name
+            service_part = services[0]
+            
+            # Extract resource names for single service
+            resource_names = []
+            if tfvars_file:
+                resource_names = self._extract_resource_names_from_tfvars(tfvars_file, services)
+            
+            if resource_names:
+                # Use first resource name for state file
+                state_filename = f"{resource_names[0]}.tfstate"
+            else:
+                # Fallback to project name
+                state_filename = f"{project}.tfstate"
+        else:
+            # Multiple services - use project name for organization
+            service_part = project
+            state_filename = f"{project}-stack.tfstate"
+        
+        # Generate the backend key with resource-specific state file name
+        backend_key = f"{service_part}/{account_name}/{region}/{project}/{state_filename}"
+        
+        debug_print(f"Generated dynamic backend key: {backend_key}")
+        debug_print(f"  Original would be: s3/{account_name}/{region}/{project}/terraform.tfstate")
+        debug_print(f"  Services detected: {services} -> service_part: {service_part}")
+        debug_print(f"  State filename: {state_filename}")
+        
+        return backend_key
+
+    # ===== PRE-DEPLOYMENT VALIDATION METHODS =====
+    
+    def _validate_tfvars_syntax(self, tfvars_file: Path) -> Tuple[bool, List[str]]:
+        """Validate HCL syntax in tfvars file"""
+        try:
+            content = tfvars_file.read_text()
+            errors = []
+            
+            # Basic HCL syntax checks
+            if not content.strip():
+                errors.append("Tfvars file is empty")
+                return False, errors
+            
+            # Check for basic HCL structure issues
+            open_braces = content.count('{')
+            close_braces = content.count('}')
+            if open_braces != close_braces:
+                errors.append(f"Mismatched braces: {open_braces} opening, {close_braces} closing")
+            
+            open_brackets = content.count('[')
+            close_brackets = content.count(']')
+            if open_brackets != close_brackets:
+                errors.append(f"Mismatched brackets: {open_brackets} opening, {close_brackets} closing")
+            
+            # Check for unterminated strings
+            lines = content.split('\n')
+            for i, line in enumerate(lines, 1):
+                # Skip comments
+                if line.strip().startswith('#') or line.strip().startswith('//'):
                     continue
                 
-                if line.endswith(':'):
-                    key = line[:-1].strip("'\"")
-                    if key in ['accounts', 's3_templates', 'regions', 'default_tags']:
-                        current_section = key
-                        current_account = None
-                    elif current_section == 'accounts' and key.isdigit():
-                        current_account = key
-                        config['accounts'][current_account] = {}
-                elif ':' in line and current_section and current_account:
-                    key, value = line.split(':', 1)
-                    key = key.strip()
-                    value = value.strip().strip("'\"")
-                    config['accounts'][current_account][key] = value
+                # Check for odd number of quotes (unterminated strings)
+                if line.count('"') % 2 != 0 and '=' in line:
+                    errors.append(f"Line {i}: Possible unterminated string")
+            
+            # Check for required structure (accounts block)
+            if 'accounts' not in content:
+                errors.append("Missing required 'accounts' configuration block")
+            
+            return len(errors) == 0, errors
+            
+        except Exception as e:
+            return False, [f"Error reading tfvars file: {str(e)}"]
+    
+    def _validate_file_structure(self, deployment_dir: Path) -> Tuple[bool, List[str]]:
+        """Validate deployment directory structure"""
+        errors = []
         
-        return config
+        try:
+            if not deployment_dir.exists():
+                errors.append(f"Deployment directory does not exist: {deployment_dir}")
+                return False, errors
+            
+            # Check for tfvars files
+            tfvars_files = list(deployment_dir.glob("*.tfvars"))
+            if not tfvars_files:
+                errors.append(f"No .tfvars files found in {deployment_dir}")
+            
+            # Check file permissions
+            for tfvars_file in tfvars_files:
+                if not tfvars_file.is_file():
+                    errors.append(f"Tfvars path is not a file: {tfvars_file}")
+                elif not os.access(tfvars_file, os.R_OK):
+                    errors.append(f"Cannot read tfvars file: {tfvars_file}")
+            
+            return len(errors) == 0, errors
+            
+        except Exception as e:
+            return False, [f"Error validating file structure: {str(e)}"]
+    
+    def _validate_aws_region(self, region: str) -> Tuple[bool, List[str]]:
+        """Validate AWS region"""
+        if not region:
+            return False, ["Region is empty or None"]
+        
+        if region not in self.valid_aws_regions:
+            return False, [f"Invalid AWS region: {region}. Valid regions: {', '.join(sorted(self.valid_aws_regions))}"]
+        
+        return True, []
+    
+    def _validate_account_configuration(self, tfvars_content: str) -> Tuple[bool, List[str]]:
+        """Validate account configuration in tfvars"""
+        errors = []
+        
+        try:
+            # Check for accounts block
+            accounts_match = re.search(r'accounts\s*=\s*{([^}]+)}', tfvars_content, re.DOTALL)
+            if not accounts_match:
+                errors.append("Missing 'accounts' configuration block")
+                return False, errors
+            
+            accounts_content = accounts_match.group(1)
+            
+            # Check for account ID (12-digit number)
+            account_id_match = re.search(r'"([0-9]{12})"', accounts_content)
+            if not account_id_match:
+                errors.append("Missing valid 12-digit account ID in accounts block")
+            
+            # Check for required fields
+            required_fields = ['account_name', 'environment', 'regions']
+            for field in required_fields:
+                if not re.search(rf'{field}\s*=', accounts_content):
+                    errors.append(f"Missing required field '{field}' in accounts block")
+            
+            # Check regions format
+            regions_match = re.search(r'regions\s*=\s*\[([^\]]+)\]', accounts_content)
+            if regions_match:
+                regions_content = regions_match.group(1)
+                # Extract region names and validate each
+                region_names = re.findall(r'"([^"]+)"', regions_content)
+                for region in region_names:
+                    if region not in self.valid_aws_regions:
+                        errors.append(f"Invalid region '{region}' in regions list")
+            
+            return len(errors) == 0, errors
+            
+        except Exception as e:
+            return False, [f"Error validating account configuration: {str(e)}"]
+    
+    def _validate_required_variables(self, tfvars_content: str, services: List[str]) -> Tuple[bool, List[str]]:
+        """Check service-specific required variables"""
+        errors = []
+        warnings = []
+        
+        # Service-specific validation rules
+        service_requirements = {
+            's3': ['bucket_name'],
+            'lambda': ['function_name', 'runtime'],
+            'iam': ['role_name'],
+            'sqs': ['queue_name'],
+            'sns': ['topic_name']
+        }
+        
+        for service in services:
+            if service in service_requirements:
+                for required_var in service_requirements[service]:
+                    if not re.search(rf'{required_var}\s*=', tfvars_content):
+                        errors.append(f"Service '{service}' missing required variable '{required_var}'")
+        
+        return len(errors) == 0, errors + warnings
+    
+    def run_pre_deployment_validation(self, deployment: Dict) -> Dict:
+        """Comprehensive pre-deployment validation (excluding security - handled by OPA)"""
+        
+        start_time = time.time()
+        validation_results = {
+            "deployment": deployment['project'],
+            "account": deployment['account_name'],
+            "region": deployment['region'],
+            "timestamp": datetime.now().isoformat(),
+            "validations": {},
+            "overall_status": "pending",
+            "errors": [],
+            "warnings": [],
+            "summary": ""
+        }
+        
+        try:
+            tfvars_file = Path(deployment['file'])
+            deployment_dir = Path(deployment['deployment_dir'])
+            
+            # 1. File structure validation
+            file_valid, file_errors = self._validate_file_structure(deployment_dir)
+            validation_results["validations"]["file_structure"] = {
+                "status": "passed" if file_valid else "failed",
+                "errors": file_errors
+            }
+            if not file_valid:
+                validation_results["errors"].extend(file_errors)
+            
+            # 2. Tfvars syntax validation
+            syntax_valid, syntax_errors = self._validate_tfvars_syntax(tfvars_file)
+            validation_results["validations"]["syntax"] = {
+                "status": "passed" if syntax_valid else "failed", 
+                "errors": syntax_errors
+            }
+            if not syntax_valid:
+                validation_results["errors"].extend(syntax_errors)
+            
+            # 3. AWS region validation
+            region_valid, region_errors = self._validate_aws_region(deployment['region'])
+            validation_results["validations"]["aws_region"] = {
+                "status": "passed" if region_valid else "failed",
+                "errors": region_errors
+            }
+            if not region_valid:
+                validation_results["errors"].extend(region_errors)
+            
+            # 4. Account configuration validation
+            tfvars_content = tfvars_file.read_text()
+            account_valid, account_errors = self._validate_account_configuration(tfvars_content)
+            validation_results["validations"]["account_config"] = {
+                "status": "passed" if account_valid else "failed",
+                "errors": account_errors
+            }
+            if not account_valid:
+                validation_results["errors"].extend(account_errors)
+            
+            # 5. Service-specific variable validation
+            services = self._detect_services_from_tfvars(tfvars_file)
+            vars_valid, vars_errors = self._validate_required_variables(tfvars_content, services)
+            validation_results["validations"]["required_variables"] = {
+                "status": "passed" if vars_valid else "failed",
+                "errors": vars_errors,
+                "services_detected": services
+            }
+            if not vars_valid:
+                validation_results["errors"].extend(vars_errors)
+            
+            # Determine overall status
+            total_errors = len(validation_results["errors"])
+            if total_errors == 0:
+                validation_results["overall_status"] = "passed"
+                validation_results["summary"] = f"✅ All {len(validation_results['validations'])} pre-deployment validations passed"
+            else:
+                validation_results["overall_status"] = "failed"
+                validation_results["summary"] = f"❌ {total_errors} validation error(s) found across {len(validation_results['validations'])} checks"
+            
+        except Exception as e:
+            validation_results["overall_status"] = "error"
+            validation_results["errors"].append(f"Validation process failed: {str(e)}")
+            validation_results["summary"] = f"❌ Validation process error: {str(e)}"
+        
+        validation_results["duration_seconds"] = round(time.time() - start_time, 2)
+        return validation_results
+    
+    def generate_validation_report_markdown(self, validation_results: Dict) -> str:
+        """Generate a markdown report from validation results"""
+        
+        report = f"## 🔍 Pre-Deployment Validation Report\n\n"
+        report += f"**Deployment**: `{validation_results['deployment']}`  \n"
+        report += f"**Account**: `{validation_results['account']}`  \n"
+        report += f"**Region**: `{validation_results['region']}`  \n"
+        report += f"**Status**: {validation_results['summary']}  \n"
+        report += f"**Duration**: {validation_results['duration_seconds']}s  \n"
+        report += f"**Timestamp**: {validation_results['timestamp']}\n\n"
+        
+        # Validation details
+        if validation_results['validations']:
+            report += "### 📋 Validation Details\n\n"
+            report += "| Check | Status | Details |\n"
+            report += "|-------|--------|----------|\n"
+            
+            for check_name, check_result in validation_results['validations'].items():
+                status_icon = "✅" if check_result['status'] == 'passed' else "❌"
+                status_text = check_result['status'].title()
+                
+                details = ""
+                if check_result.get('errors'):
+                    details = "; ".join(check_result['errors'])
+                elif check_name == "required_variables" and 'services_detected' in check_result:
+                    details = f"Services: {', '.join(check_result['services_detected'])}"
+                else:
+                    details = "No issues found"
+                
+                # Truncate details if too long
+                if len(details) > 100:
+                    details = details[:97] + "..."
+                
+                report += f"| {check_name.replace('_', ' ').title()} | {status_icon} {status_text} | {details} |\n"
+            
+            report += "\n"
+        
+        # Error summary
+        if validation_results['errors']:
+            report += "### ❌ Issues Found\n\n"
+            for i, error in enumerate(validation_results['errors'], 1):
+                report += f"{i}. {error}\n"
+            report += "\n"
+            
+            # Add fix suggestions
+            report += "### 💡 Suggested Fixes\n\n"
+            
+            # Analyze errors and provide specific suggestions
+            if any("syntax" in error.lower() for error in validation_results['errors']):
+                report += "- **Syntax Errors**: Check HCL syntax, ensure balanced braces `{}` and brackets `[]`\n"
+                report += "- **String Issues**: Verify all strings are properly quoted with double quotes `\"`\n"
+            
+            if any("account" in error.lower() for error in validation_results['errors']):
+                report += "- **Account Configuration**: Ensure accounts block has valid 12-digit account ID and required fields\n"
+            
+            if any("region" in error.lower() for error in validation_results['errors']):
+                report += "- **Region Issues**: Use valid AWS region names (e.g., us-east-1, eu-west-1)\n"
+            
+            if any("variable" in error.lower() for error in validation_results['errors']):
+                report += "- **Missing Variables**: Add required variables for detected services\n"
+            
+            report += "\n"
+        else:
+            report += "### ✅ All Validations Passed\n\n"
+            report += "Your configuration looks good! Proceeding to Terraform planning...\n\n"
+        
+        return report
     
     def find_deployments(self, changed_files=None, filters=None):
         """Find S3 deployments to process"""
@@ -144,93 +561,298 @@ class TerraformOrchestrator:
         return deployments
     
     def _analyze_deployment_file(self, tfvars_file: Path) -> Optional[Dict]:
-        """Analyze tfvars file and extract deployment information"""
+        """Analyze tfvars file and extract deployment information from tfvars content"""
         try:
-            # Extract account and region from path structure
-            # Support both:
-            # 1. Full: Accounts/account-name/region/project/file.tfvars
-            # 2. Simple: Accounts/account-name/file.tfvars
-            path_parts = tfvars_file.parts
+            # Extract all information from the tfvars file content
+            account_info = self._extract_account_info_from_tfvars(tfvars_file)
+            if not account_info:
+                debug_print(f"Could not extract account info from {tfvars_file}")
+                return None
             
-            if "Accounts" in path_parts:
-                accounts_index = path_parts.index("Accounts")
-                
-                # Full structure: Accounts/account-name/region/project/file.tfvars
-                if len(path_parts) > accounts_index + 3:
-                    account_name = path_parts[accounts_index + 1]
-                    region = path_parts[accounts_index + 2]
-                    project = path_parts[accounts_index + 3]
-                    
-                    # Find account ID from accounts config
-                    account_id = None
-                    for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
-                        if acc_info.get('account_name') == account_name:
-                            account_id = acc_id
-                            break
-                    
-                    if account_id:
-                        return {
-                            'file': str(tfvars_file),
-                            'account_id': account_id,
-                            'account_name': account_name,
-                            'region': region,
-                            'project': project,
-                            'deployment_dir': str(tfvars_file.parent),
-                            'environment': self.accounts_config['accounts'][account_id].get('environment', 'unknown')
-                        }
-                
-                # Simple structure: Accounts/account-name/file.tfvars
-                elif len(path_parts) > accounts_index + 1:
-                    account_name = path_parts[accounts_index + 1]
-                    
-                    # Extract region from tfvars file name or use default
-                    region = "us-east-1"  # Default region
-                    
-                    # Check if accounts_config has this account
-                    account_id = None
-                    for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
-                        if acc_info.get('account_name') == account_name:
-                            account_id = acc_id
-                            region = acc_info.get('region', region)
-                            break
-                    
-                    # If no account config, use account_name as account_id
-                    if not account_id:
-                        account_id = account_name
-                        debug_print(f"No account config found for {account_name}, using as account_id")
-                    
-                    return {
-                        'file': str(tfvars_file),
-                        'account_id': account_id,
-                        'account_name': account_name,
-                        'region': region,
-                        'project': tfvars_file.stem,  # Use filename without extension as project
-                        'deployment_dir': str(tfvars_file.parent),
-                        'environment': self.accounts_config.get('accounts', {}).get(account_id, {}).get('environment', 'poc')
-                    }
+            # Use tfvars filename as project name
+            project = tfvars_file.stem
+            
+            return {
+                'file': str(tfvars_file),
+                'account_id': account_info['account_id'],
+                'account_name': account_info['account_name'],
+                'region': account_info['region'],
+                'project': project,
+                'deployment_dir': str(tfvars_file.parent),
+                'environment': account_info['environment']
+            }
                     
         except Exception as e:
             debug_print(f"Error analyzing {tfvars_file}: {e}")
         
         return None
     
-    def _extract_account_name_from_tfvars(self, tfvars_file: Path) -> Optional[str]:
+    def _extract_account_info_from_tfvars(self, tfvars_file: Path) -> Optional[Dict]:
         """
-        Extract the real account_name from tfvars file content.
-        Looks for: account_name = "arj-wkld-a-prd"
+        Extract account information directly from tfvars file content.
+        Looks for accounts block with account_id, account_name, environment, regions
         """
         try:
             content = tfvars_file.read_text()
-            # Look for account_name in accounts block
-            # Pattern: account_name = "arj-wkld-a-prd"
+            
+            # Extract from accounts block
+            # Pattern: accounts = { "123456789012" = { account_name = "arj-wkld-a-prd", environment = "production", regions = ["us-east-1"] } }
             import re
-            match = re.search(r'account_name\s*=\s*"([^"]+)"', content)
-            if match:
-                return match.group(1)
-            return None
+            
+            # Find the accounts block
+            accounts_match = re.search(r'accounts\s*=\s*{([^}]+)}', content, re.DOTALL)
+            if not accounts_match:
+                debug_print(f"No accounts block found in {tfvars_file}")
+                return None
+            
+            accounts_content = accounts_match.group(1)
+            
+            # Extract account ID (first key in accounts block)
+            account_id_match = re.search(r'"([0-9]{12})"', accounts_content)
+            if not account_id_match:
+                debug_print(f"No account ID found in {tfvars_file}")
+                return None
+            
+            account_id = account_id_match.group(1)
+            
+            # Extract account_name
+            account_name_match = re.search(r'account_name\s*=\s*"([^"]+)"', accounts_content)
+            account_name = account_name_match.group(1) if account_name_match else account_id
+            
+            # Extract environment
+            env_match = re.search(r'environment\s*=\s*"([^"]+)"', accounts_content)
+            environment = env_match.group(1) if env_match else 'poc'
+            
+            # Extract region (from regions list or default)
+            regions_match = re.search(r'regions\s*=\s*\[([^\]]+)\]', accounts_content)
+            if regions_match:
+                # Extract first region from list
+                region_list = regions_match.group(1)
+                first_region_match = re.search(r'"([^"]+)"', region_list)
+                region = first_region_match.group(1) if first_region_match else 'us-east-1'
+            else:
+                region = 'us-east-1'  # Default region
+            
+            return {
+                'account_id': account_id,
+                'account_name': account_name,
+                'environment': environment,
+                'region': region
+            }
+            
         except Exception as e:
-            debug_print(f"Error extracting account name from {tfvars_file}: {e}")
+            debug_print(f"Error extracting account info from {tfvars_file}: {e}")
             return None
+    
+    def _extract_terraform_outputs(self, terraform_output: str, action: str) -> Dict:
+        """Extract detailed resource information from terraform output for enhanced PR comments"""
+        outputs = {
+            'resources_created': [],
+            'resources_modified': [],
+            'resources_destroyed': [],
+            'resource_details': {},
+            'error_details': []
+        }
+        
+        try:
+            lines = terraform_output.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                
+                # Detect terraform plan/apply sections
+                if 'will be created' in line:
+                    resource_name = self._extract_resource_name_from_line(line)
+                    if resource_name:
+                        outputs['resources_created'].append(resource_name)
+                elif 'will be updated' in line or 'will be modified' in line:
+                    resource_name = self._extract_resource_name_from_line(line)
+                    if resource_name:
+                        outputs['resources_modified'].append(resource_name)
+                elif 'will be destroyed' in line:
+                    resource_name = self._extract_resource_name_from_line(line)
+                    if resource_name:
+                        outputs['resources_destroyed'].append(resource_name)
+                
+                # Extract resource details (ARNs, names, etc.) for apply action
+                if action == 'apply':
+                    self._extract_resource_details_from_line(line, outputs['resource_details'])
+                
+                # Extract error information
+                if any(error_keyword in line.lower() for error_keyword in ['error', 'failed', 'invalid']):
+                    if line not in outputs['error_details'] and len(line) > 10:
+                        outputs['error_details'].append(line)
+            
+            debug_print(f"Extracted terraform outputs: {len(outputs['resources_created'])} created, {len(outputs['resources_modified'])} modified, {len(outputs['resources_destroyed'])} destroyed")
+            return outputs
+            
+        except Exception as e:
+            debug_print(f"Error extracting terraform outputs: {e}")
+            return outputs
+    
+    def _extract_resource_name_from_line(self, line: str) -> Optional[str]:
+        """Extract resource name from terraform output line"""
+        # Pattern: # aws_s3_bucket.example will be created
+        match = re.search(r'#\s+(\S+)\s+will be', line)
+        if match:
+            return match.group(1)
+        
+        # Alternative pattern for apply output
+        match = re.search(r'(\w+\.\w+):', line)
+        if match:
+            return match.group(1)
+            
+        return None
+    
+    def _extract_resource_details_from_line(self, line: str, details: Dict):
+        """Extract resource details like ARNs, names from terraform output"""
+        try:
+            # Extract ARNs
+            arn_match = re.search(r'(arn:aws:[^:]+:[^:]*:[^:]*:[^"\s]+)', line)
+            if arn_match:
+                arn = arn_match.group(1)
+                service = arn.split(':')[2] if ':' in arn else 'unknown'
+                if service not in details:
+                    details[service] = {'arns': [], 'names': [], 'ids': []}
+                if arn not in details[service]['arns']:
+                    details[service]['arns'].append(arn)
+            
+            # Extract resource names/IDs with improved patterns
+            name_patterns = [
+                (r'bucket["\s]*=\s*["\']([^"\']+)["\']', 's3'),
+                (r'function_name["\s]*=\s*["\']([^"\']+)["\']', 'lambda'),
+                (r'queue_url["\s]*=\s*["\']([^"\']+)["\']', 'sqs'),
+                (r'topic_arn["\s]*=\s*["\']([^"\']+)["\']', 'sns'),
+                (r'role_name["\s]*=\s*["\']([^"\']+)["\']', 'iam'),
+                (r'policy_name["\s]*=\s*["\']([^"\']+)["\']', 'iam'),
+                (r'key_id["\s]*=\s*["\']([^"\']+)["\']', 'kms'),
+                (r'instance_id["\s]*=\s*["\']([^"\']+)["\']', 'ec2'),
+                (r'id\s*=\s*["\']([^"\']+)["\']', 'general')
+            ]
+            
+            for pattern, service in name_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    name = match.group(1)
+                    if service not in details:
+                        details[service] = {'arns': [], 'names': [], 'ids': []}
+                    if name not in details[service]['names']:
+                        details[service]['names'].append(name)
+                        
+        except Exception as e:
+            debug_print(f"Error extracting resource details from line: {e}")
+    
+    def _generate_enhanced_pr_comment(self, deployment: Dict, result: Dict, services: List[str]) -> str:
+        """Generate comprehensive PR comment with service details, outputs, and error reporting"""
+        deployment_name = f"{deployment['account_name']}-{deployment['project']}"
+        backend_key = result.get('backend_key', 'unknown')
+        action = result.get('action', 'unknown').title()
+        
+        if not result['success']:
+            # Enhanced error comment
+            error_msg = result.get('error', 'Unknown error')
+            output = result.get('output', 'No output available')
+            
+            comment = f"""### ❌ {deployment_name} - {action} Failed
+
+**Services:** {', '.join(services) if services else 'None detected'}  
+**Backend Key:** `{backend_key}`
+**Error:** {error_msg}
+
+<details><summary><strong>🚨 Error Details</strong></summary>
+
+```
+{output[:3000]}
+```
+
+</details>
+
+**🔧 Next Steps:**
+1. Review the error details above
+2. Fix the configuration issues
+3. Push changes to a new feature branch
+4. The pipeline will automatically re-run
+
+---
+"""
+            return comment
+        
+        # Success comment with enhanced details
+        outputs = self._extract_terraform_outputs(result.get('output', ''), result.get('action', 'unknown'))
+        has_changes = result.get('has_changes', True)
+        
+        status_emoji = "🔄" if has_changes else "➖"
+        status_text = "Changes Applied" if has_changes else "No Changes"
+        
+        comment = f"""### {status_emoji} {deployment_name} - {action} {status_text}
+
+**Services:** {', '.join(services) if services else 'None detected'}  
+**Backend Key:** `{backend_key}`
+**Action:** {action}
+
+"""
+        
+        # Add resource summary
+        total_resources = len(outputs['resources_created']) + len(outputs['resources_modified']) + len(outputs['resources_destroyed'])
+        
+        if total_resources > 0:
+            comment += f"**📊 Resource Summary:**\n"
+            
+            if outputs['resources_created']:
+                comment += f"- 📦 **Created:** {len(outputs['resources_created'])} resources\n"
+                for resource in outputs['resources_created'][:5]:  # Show first 5
+                    comment += f"  - `{resource}`\n"
+                if len(outputs['resources_created']) > 5:
+                    comment += f"  - ... and {len(outputs['resources_created']) - 5} more\n"
+            
+            if outputs['resources_modified']:
+                comment += f"- 🔧 **Modified:** {len(outputs['resources_modified'])} resources\n"
+                for resource in outputs['resources_modified'][:3]:
+                    comment += f"  - `{resource}`\n"
+                    
+            if outputs['resources_destroyed']:
+                comment += f"- 🗑️ **Destroyed:** {len(outputs['resources_destroyed'])} resources\n"
+                for resource in outputs['resources_destroyed'][:3]:
+                    comment += f"  - `{resource}`\n"
+            
+            comment += "\n"
+        
+        # Add service-specific details (ARNs, names)
+        if outputs['resource_details']:
+            comment += "**🎯 Service Details:**\n"
+            for service, details in outputs['resource_details'].items():
+                service_name = service.upper()
+                comment += f"**{service_name}:**\n"
+                
+                # Show ARNs
+                if details.get('arns'):
+                    comment += f"  - ARNs:\n"
+                    for arn in details['arns'][:3]:  # Limit to 3 ARNs
+                        comment += f"    - `{arn}`\n"
+                
+                # Show resource names
+                if details.get('names'):
+                    comment += f"  - Names:\n"
+                    for name in details['names'][:5]:  # Limit to 5 names
+                        comment += f"    - `{name}`\n"
+                        
+                comment += "\n"
+        
+        # Add terraform output details in collapsible section
+        if result.get('output'):
+            comment += f"""<details><summary><strong>🔍 Full Terraform Output</strong></summary>
+
+```terraform
+{result['output'][:4000]}
+```
+
+</details>
+
+"""
+        
+        comment += "**✅ Deployment completed successfully!**\n\n---\n"
+        
+        return comment
     
     def _matches_filters(self, deployment_info: Dict, filters: Optional[Dict]) -> bool:
         """Check if deployment matches provided filters"""
@@ -258,6 +880,18 @@ class TerraformOrchestrator:
             
             try:
                 result = self._process_deployment(deployment, action)
+                
+                # Extract services from the deployment and generate enhanced PR comment
+                tfvars_source = Path(deployment['file'])
+                if not tfvars_source.is_absolute():
+                    tfvars_source = self.working_dir / tfvars_source
+                detected_services = self._detect_services_from_tfvars(tfvars_source)
+                
+                # Generate enhanced PR comment with service details
+                enhanced_comment = self._generate_enhanced_pr_comment(deployment, result, detected_services)
+                result['pr_comment'] = enhanced_comment
+                result['detected_services'] = detected_services
+                
                 if result['success']:
                     results['successful'].append(result)
                     print(f"✅ {deployment['account_name']}/{deployment['region']}: Success")
@@ -268,12 +902,35 @@ class TerraformOrchestrator:
                         print(f"🔍 Error details: {result.get('output', 'No output')[:500]}")
                         
             except Exception as e:
+                # Generate basic error result with backend key
+                try:
+                    tfvars_source = Path(deployment['file'])
+                    if not tfvars_source.is_absolute():
+                        tfvars_source = self.working_dir / tfvars_source
+                    detected_services = self._detect_services_from_tfvars(tfvars_source)
+                except:
+                    detected_services = []
+                    
                 error_result = {
                     'deployment': deployment,
                     'success': False,
                     'error': str(e),
-                    'output': f"Exception during processing: {e}"
+                    'output': f"Exception during processing: {e}",
+                    'backend_key': f"s3/{deployment['account_name']}/{deployment['region']}/{deployment['project']}/terraform.tfstate",
+                    'action': action,
+                    'terraform_outputs': {
+                        'resources_created': [],
+                        'resources_modified': [],
+                        'resources_destroyed': [],
+                        'resource_details': {}
+                    },
+                    'detected_services': detected_services
                 }
+                
+                # Generate enhanced PR comment for the error
+                enhanced_comment = self._generate_enhanced_pr_comment(deployment, error_result, detected_services)
+                error_result['pr_comment'] = enhanced_comment
+                
                 results['failed'].append(error_result)
                 print(f"💥 {deployment['account_name']}/{deployment['region']}: Exception - {e}")
         
@@ -286,6 +943,16 @@ class TerraformOrchestrator:
         }
         
         print(f"📊 Summary: {results['summary']['successful']} successful, {results['summary']['failed']} failed")
+        
+        # Print enhanced PR comments for debugging
+        if DEBUG:
+            print("\n🔗 Enhanced PR Comments Generated:")
+            for result in results['successful'] + results['failed']:
+                if result.get('pr_comment'):
+                    deployment_name = f"{result['deployment']['account_name']}-{result['deployment']['project']}"
+                    print(f"\n📝 {deployment_name}:")
+                    print(result['pr_comment'][:500] + "..." if len(result['pr_comment']) > 500 else result['pr_comment'])
+        
         return results
     
     def _process_deployment(self, deployment: Dict, action: str) -> Dict:
@@ -317,21 +984,22 @@ class TerraformOrchestrator:
             # that need to be available in the controller directory
             self._copy_referenced_policy_files(tfvars_source, main_dir, deployment)
             
-            # Extract real account name from tfvars file for state key
-            # The deployment['account_name'] might be the folder name (test-poc-3)
-            # but the actual account_name in tfvars might be different (arj-wkld-a-prd)
-            real_account_name = self._extract_account_name_from_tfvars(tfvars_source)
-            if not real_account_name:
-                # Fallback to folder-based account name
-                real_account_name = deployment['account_name']
-                debug_print(f"Using folder name as account: {real_account_name}")
-            else:
-                debug_print(f"Extracted account name from tfvars: {real_account_name}")
+            # Account info is now extracted in _analyze_deployment_file
+            # Use the account_name from deployment (which is already extracted from tfvars)
+            real_account_name = deployment['account_name']
+            debug_print(f"Using account name: {real_account_name}")
             
-            # Initialize Terraform with backend config
-            # Use real account name from tfvars (matches existing state files)
-            state_key = f"s3/{real_account_name}/{deployment['region']}/{deployment['project']}/terraform.tfstate"
-            debug_print(f"State key: {state_key}")
+            # Detect services from tfvars and generate dynamic backend key
+            detected_services = self._detect_services_from_tfvars(tfvars_source)
+            state_key = self._generate_dynamic_backend_key(
+                real_account_name, 
+                deployment['region'], 
+                deployment['project'], 
+                detected_services,
+                tfvars_source
+            )
+            debug_print(f"Dynamic state key: {state_key}")
+            debug_print(f"Detected services: {detected_services}")
             init_cmd = [
                 'init', '-input=false',
                 f'-backend-config=key={state_key}',
@@ -480,12 +1148,18 @@ class TerraformOrchestrator:
             # Determine success based on action type and exit code
             is_successful = (action == "plan" and result['returncode'] in [0, 2]) or (action != "plan" and result['returncode'] == 0)
             
+            # Extract terraform outputs for enhanced PR comments
+            terraform_outputs = self._extract_terraform_outputs(result['output'], action)
+            
             # Prepare result with plan file info if applicable
             result_data = {
                 'deployment': deployment,
                 'success': is_successful,
                 'error': None if is_successful else error_details,
-                'output': result['output']
+                'output': result['output'],
+                'backend_key': state_key,
+                'action': action,
+                'terraform_outputs': terraform_outputs
             }
             
             # Add plan file information for successful plans
@@ -512,11 +1186,39 @@ class TerraformOrchestrator:
             return result_data
             
         except Exception as e:
+            # Generate backend key even for failed deployments
+            try:
+                tfvars_source = Path(deployment['file'])
+                if not tfvars_source.is_absolute():
+                    tfvars_source = self.working_dir / tfvars_source
+                # Account name is already extracted in _analyze_deployment_file
+                real_account_name = deployment['account_name']
+                detected_services = self._detect_services_from_tfvars(tfvars_source)
+                state_key = self._generate_dynamic_backend_key(
+                    real_account_name, 
+                    deployment['region'], 
+                    deployment['project'], 
+                    detected_services,
+                    tfvars_source
+                )
+            except:
+                # Fallback to simple backend key if something goes wrong
+                state_key = f"s3/{deployment['account_name']}/{deployment['region']}/{deployment['project']}/terraform.tfstate"
+                detected_services = []
+                
             return {
                 'deployment': deployment,
                 'success': False,
                 'error': str(e),
-                'output': f"Exception during {action}: {e}"
+                'output': f"Exception during {action}: {e}",
+                'backend_key': state_key,
+                'action': action,
+                'terraform_outputs': {
+                    'resources_created': [],
+                    'resources_modified': [],
+                    'resources_destroyed': [],
+                    'resource_details': {}
+                }
             }
     
     def _copy_referenced_policy_files(self, tfvars_file: Path, dest_dir: Path, deployment: Dict):
@@ -768,7 +1470,7 @@ class TerraformOrchestrator:
 
 def main():
     parser = argparse.ArgumentParser(description="S3 Deployment Manager")
-    parser.add_argument('action', choices=['discover', 'plan', 'apply', 'destroy'], help='Action to perform')
+    parser.add_argument('action', choices=['discover', 'validate', 'plan', 'apply', 'destroy'], help='Action to perform')
     parser.add_argument("--account", help="Filter by account name")
     parser.add_argument("--region", help="Filter by region")
     parser.add_argument("--environment", help="Filter by environment")
@@ -827,6 +1529,62 @@ def main():
                 dep['tfvars_file'] = dep['file']  # Match KMS format
                 print(f"   - {deployment_key}: {dep['file']}")
         
+        elif args.action == 'validate':
+            print(f"🔍 Running pre-deployment validation on {len(deployments)} deployments...")
+            
+            validation_results = []
+            all_passed = True
+            
+            for deployment in deployments:
+                print(f"\n📋 Validating: {deployment['project']} ({deployment['account_name']}/{deployment['region']})")
+                
+                # Run validation
+                result = orchestrator.run_pre_deployment_validation(deployment)
+                validation_results.append(result)
+                
+                # Display result summary
+                if result['overall_status'] == 'passed':
+                    print(f"   ✅ {result['summary']}")
+                else:
+                    print(f"   ❌ {result['summary']}")
+                    all_passed = False
+                    
+                    # Show errors
+                    if result['errors']:
+                        print(f"   📋 Errors:")
+                        for error in result['errors'][:3]:  # Show first 3 errors
+                            print(f"      - {error}")
+                        if len(result['errors']) > 3:
+                            print(f"      - ... and {len(result['errors']) - 3} more")
+            
+            # Generate validation report
+            if len(deployments) == 1:
+                # Single deployment - generate detailed markdown report
+                markdown_report = orchestrator.generate_validation_report_markdown(validation_results[0])
+                
+                # Save to validation-report.md
+                report_file = Path("validation-report.md")
+                report_file.write_text(markdown_report)
+                print(f"\n📄 Detailed validation report saved to: {report_file}")
+                
+            # Summary
+            passed_count = sum(1 for r in validation_results if r['overall_status'] == 'passed')
+            failed_count = len(validation_results) - passed_count
+            
+            results = {
+                'validation_results': validation_results,
+                'total_deployments': len(deployments),
+                'validations_passed': passed_count,
+                'validations_failed': failed_count,
+                'overall_status': 'passed' if all_passed else 'failed',
+                'summary': f"{passed_count}/{len(deployments)} validations passed"
+            }
+            
+            print(f"\n📊 Validation Summary: {results['summary']}")
+            
+            if not all_passed:
+                print("❌ Some validations failed - fix issues before proceeding to terraform operations")
+        
         elif args.action in ['plan', 'apply', 'destroy']:
             if args.dry_run:
                 print("🔍 Dry run - no actions will be performed")
@@ -834,6 +1592,9 @@ def main():
                 
             # Execute deployments
             deployment_results = orchestrator.execute_deployments(deployments, args.action)
+            
+            # Display enhanced PR comments
+            orchestrator.print_pr_comments(deployment_results)
             
             # Format results to match KMS output
             action_plural = f"{args.action}s" if args.action != 'apply' else 'applies'
@@ -888,6 +1649,44 @@ def main():
             import traceback
             traceback.print_exc()
         exit(1)
+
+    def get_pr_comments(self, deployment_results: Dict) -> List[Dict]:
+        """Extract enhanced PR comments from deployment results"""
+        pr_comments = []
+        
+        for result in deployment_results['successful'] + deployment_results['failed']:
+            if result.get('pr_comment'):
+                deployment_info = result['deployment']
+                pr_comments.append({
+                    'deployment': f"{deployment_info['account_name']}-{deployment_info['project']}",
+                    'account_name': deployment_info['account_name'],
+                    'region': deployment_info['region'],
+                    'project': deployment_info['project'],
+                    'success': result['success'],
+                    'action': result.get('action', 'unknown'),
+                    'backend_key': result.get('backend_key', 'unknown'),
+                    'detected_services': result.get('detected_services', []),
+                    'comment': result['pr_comment']
+                })
+        
+        return pr_comments
+    
+    def print_pr_comments(self, deployment_results: Dict):
+        """Print all enhanced PR comments for easy viewing"""
+        pr_comments = self.get_pr_comments(deployment_results)
+        
+        print("\n" + "="*80)
+        print("📝 ENHANCED PR COMMENTS GENERATED")
+        print("="*80)
+        
+        for comment_data in pr_comments:
+            print(f"\n📌 {comment_data['deployment']} ({comment_data['action']})")
+            print(f"   🎯 Services: {', '.join(comment_data['detected_services']) if comment_data['detected_services'] else 'None detected'}")
+            print(f"   🔑 Backend: {comment_data['backend_key']}")
+            print("-" * 80)
+            print(comment_data['comment'])
+            print("-" * 80)
+
 
 if __name__ == "__main__":
     main()

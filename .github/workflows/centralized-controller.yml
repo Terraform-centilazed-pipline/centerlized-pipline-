@@ -69,7 +69,7 @@ jobs:
       - name: Checkout OPA Policies
         uses: actions/checkout@v4
         with:
-          repository: mmctech/mmctech-aws-tf-opa-policies
+          repository: Terraform-centilazed-pipline/OPA-Poclies
           path: opa-policies
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -99,7 +99,7 @@ jobs:
           find opa-policies/ -type f | head -20
 
       # Note: tf-module checkout removed - Terraform fetches modules from GitHub automatically
-      # Module sources now use: git::https://github.com/mmctech/tf-module.git//Module/<NAME>
+      # Module sources now use: git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/<NAME>
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -161,7 +161,7 @@ jobs:
           echo "🔍 Running discovery for plan mode..."
           echo "Changed files: ${{ steps.changed-files.outputs.files }}"
           echo "Changed files count: ${{ steps.changed-files.outputs.count }}"
-          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
+          python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py discover \
             --changed-files "${{ steps.changed-files.outputs.files }}" \
             --output-summary deployments.json \
             --debug
@@ -192,7 +192,7 @@ jobs:
           echo "🔍 Running discovery for apply mode..."
           echo "Apply mode - using changed files: ${{ github.event.client_payload.changed_files || github.event.client_payload.files }}"
           # For apply mode, get changed files from the merge commit
-          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
+          python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py discover \
             --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
             --output-summary deployments.json \
             --debug
@@ -264,13 +264,103 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const owner = '${{ github.event.client_payload.source_owner }}';
+            const repo = '${{ github.event.client_payload.source_repo }}';
+            const pr_number = ${{ github.event.client_payload.pr_number }};
+            
+            // Get PR details for notifications
+            const { data: prData } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pr_number
+            });
+            
             // Close the PR
             await github.rest.pulls.update({
-              owner: '${{ github.event.client_payload.source_owner }}',
-              repo: '${{ github.event.client_payload.source_repo }}',
-              pull_number: ${{ github.event.client_payload.pr_number }},
+              owner,
+              repo,
+              pull_number: pr_number,
               state: 'closed'
             });
+            
+            // Add detailed notification about pre-validation failure
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: pr_number,
+              body: `🛑 **PR Closed: Pre-Deployment Validation Failed**\n\n` +
+                    `❌ Your PR failed pre-deployment validation checks\n\n` +
+                    `**Common Issues**:\n` +
+                    `- Incorrect file structure or naming\n` +
+                    `- Missing required configuration\n` +
+                    `- Invalid account or environment setup\n` +
+                    `- Permissions or access issues\n\n` +
+                    `**Next Steps**:\n` +
+                    `1. Check the validation results in the workflow logs\n` +
+                    `2. Fix the identified issues\n` +
+                    `3. Create a new PR with corrected changes\n\n` +
+                    `🔔 **Author**: @${prData.user.login} - Please review and fix the validation issues\n\n` +
+                    `---\n` +
+                    `*Pre-deployment validation must pass before Terraform planning can begin.*`
+            });
+            
+            // Send notification to reviewers/assignees if any
+            try {
+              const { data: reviews } = await github.rest.pulls.listReviews({
+                owner,
+                repo,
+                pull_number: pr_number
+              });
+              
+              const reviewers = [...new Set(reviews.map(review => review.user.login))];
+              const assignees = prData.assignees.map(assignee => assignee.login);
+              const allNotifyUsers = [...new Set([...reviewers, ...assignees])];
+              
+              if (allNotifyUsers.length > 0) {
+                const mentions = allNotifyUsers.map(user => `@${user}`).join(' ');
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr_number,
+                  body: `⚠️ **Team Notification: Pre-Validation Failure**\n\n` +
+                        `${mentions}\n\n` +
+                        `The PR by @${prData.user.login} has been closed due to pre-deployment validation failures. ` +
+                        `Please review the requirements and assist with fixing the issues if needed.\n\n` +
+                        `*Automated notification from Centralized Terraform Controller*`
+                });
+              }
+            } catch (error) {
+              console.log('⚠️ Could not send team notifications for pre-validation failure:', error.message);
+            }
+            
+            // Cleanup feature branch after pre-validation failure
+            try {
+              const branchName = prData.head.ref;
+              const protectedBranches = ['main', 'master', 'develop', 'development', 'staging', 'production'];
+              
+              if (!protectedBranches.includes(branchName)) {
+                await github.rest.git.deleteRef({
+                  owner,
+                  repo,
+                  ref: `heads/${branchName}`
+                });
+                
+                console.log(`✅ Deleted feature branch: ${branchName} after pre-validation failure`);
+                
+                // Add cleanup notification
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr_number,
+                  body: `🧹 **Branch Cleanup**: Feature branch \`${branchName}\` has been deleted. ` +
+                        `Please create a new branch with the necessary fixes.`
+                });
+              } else {
+                console.log(`⚠️ Skipped deletion of protected branch: ${branchName}`);
+              }
+            } catch (cleanupError) {
+              console.log('⚠️ Could not cleanup feature branch after pre-validation failure:', cleanupError.message);
+            }
             
             core.setFailed('❌ Pre-deployment validation failed. PR closed.');
 
@@ -288,7 +378,7 @@ jobs:
           # Use the deployment orchestrator to run plans and create artifacts
           # This handles multiple deployments from different accounts properly
           set +e  # Don't exit on error - we want to show results even if some plans fail
-          python3 ../controller/scripts/terraform-deployment-orchestrator.py plan \
+          python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py plan \
             --deployments-json deployments.json \
             --output-summary plan-results.json \
             --debug
@@ -412,10 +502,6 @@ jobs:
                 echo "📋 Violation Details:"
                 jq -r '.violations[] | "  - [\(.severity)] \(.message)"' opa-results.json || true
               fi
-            elif [ "$validation_exit_code" -eq 2 ]; then
-              echo "validation_status=skipped" >> $GITHUB_OUTPUT
-              echo ""
-              echo "⚠️ OPA validation skipped - no plans to validate"
             else
               echo "validation_status=error" >> $GITHUB_OUTPUT
               echo ""
@@ -435,6 +521,15 @@ jobs:
           
           # Exit with appropriate code for workflow control
           exit $validation_exit_code
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
+             select(type == "object" and .severity == "high")] | length' 2>/dev/null || echo "0")
+             
+          medium_violations=$(echo "$violations_json" | jq -r '
+            [.result[0].expressions[0].value // {} | 
+             if type == "object" then keys[] else empty end |
+             try fromjson catch empty |
              select(type == "object" and .severity == "medium")] | length' 2>/dev/null || echo "0")
              
           low_violations=$(echo "$violations_json" | jq -r '
@@ -444,6 +539,141 @@ jobs:
              select(type == "object" and .severity == "low")] | length' 2>/dev/null || echo "0")
           
           # Ensure variables are numeric (default to 0 if empty, remove any whitespace/newlines)
+          total_violations=$(echo "${total_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+          critical_violations=$(echo "${critical_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+          high_violations=$(echo "${high_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+          medium_violations=$(echo "${medium_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+          low_violations=$(echo "${low_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
+          
+          echo ""
+          echo "📊 Validation Results:"
+          echo "   Total violations: $total_violations"
+          echo "   🔴 Critical: $critical_violations"
+          echo "   🟠 High: $high_violations"
+          echo "   🟡 Medium: $medium_violations"
+          echo "   🟢 Low: $low_violations"
+          
+          # Set outputs
+          echo "total_violations=$total_violations" >> $GITHUB_OUTPUT
+          echo "critical_violations=$critical_violations" >> $GITHUB_OUTPUT
+          echo "high_violations=$high_violations" >> $GITHUB_OUTPUT
+          echo "medium_violations=$medium_violations" >> $GITHUB_OUTPUT
+          echo "low_violations=$low_violations" >> $GITHUB_OUTPUT
+          echo "services_detected=$services_detected" >> $GITHUB_OUTPUT
+          
+          if [ "$total_violations" -eq 0 ]; then
+            echo "validation_status=passed" >> $GITHUB_OUTPUT
+            echo ""
+            echo "✅ All policies passed - deployment authorized!"
+          else
+            echo "validation_status=failed" >> $GITHUB_OUTPUT
+            echo ""
+            echo "❌ Validation failed: $total_violations violations found"
+            echo ""
+            echo "📋 Violation Details:"
+            cat opa-result.txt
+          fi
+
+      # ===== DEBUG: Show Actual Plan JSON Structure =====
+      - name: 🔍 Debug Actual Plan JSON Structure  
+        if: steps.plan.outputs.opa_plan_ready == 'true'
+        working-directory: source-repo
+        run: |
+          echo "🔍 === ACTUAL PLAN JSON STRUCTURE DEBUG ==="
+          echo ""
+          echo "📂 Available JSON plans:"
+          ls -la canonical-plan/*.json || echo "No JSON files found"
+          echo ""
+          
+          for json_file in canonical-plan/*.json; do
+            if [ ! -f "$json_file" ]; then
+              continue
+            fi
+            
+            plan_name=$(basename "$json_file" .json)
+            echo "📄 === PLAN: $plan_name ==="
+            echo "📊 File size: $(wc -c < "$json_file") bytes"
+            echo ""
+            
+            echo "🔍 Top-level structure:"
+            jq 'keys' "$json_file" 2>/dev/null || echo "Failed to parse JSON"
+            echo ""
+            
+            echo "🔍 Resource changes summary:"
+            echo "   Total resource changes: $(jq -r '.resource_changes | length' "$json_file" 2>/dev/null || echo "0")"
+            echo "   Resource types:"
+            jq -r '.resource_changes[]?.type' "$json_file" 2>/dev/null | sort | uniq -c || echo "   No types found"
+            echo ""
+            
+            echo "🔍 First few resource changes (structure):"
+            jq -r '.resource_changes[0:2] | .[] | {type: .type, actions: .change.actions, address: .address, after_sample: .change.after}' "$json_file" 2>/dev/null || echo "   No resource changes found"
+            echo ""
+            
+            echo "🔍 S3-related resources:"
+            jq -r '.resource_changes[] | select(.type | contains("s3")) | {type: .type, address: .address, actions: .change.actions, tags: .change.after.tags}' "$json_file" 2>/dev/null || echo "   No S3 resources found"
+            echo ""
+            
+            # Show first 50 lines of the actual JSON for manual inspection
+            echo "🔍 First 50 lines of actual JSON content:"
+            echo '```json'
+            head -50 "$json_file"
+            echo ""
+            echo "... (truncated)"
+            echo '```'
+            echo ""
+            
+            # Show specific sections
+            echo "🔍 Planned values (if present):"
+            jq -r '.planned_values.root_module.resources[0:2] | .[] | {type: .type, address: .address}' "$json_file" 2>/dev/null || echo "   No planned values found"
+            echo ""
+            
+            echo "🔍 Configuration (if present):"
+            jq -r '.configuration.root_module.resources[0:2] | .[] | {type: .type, address: .address}' "$json_file" 2>/dev/null || echo "   No configuration found"
+            echo ""
+            
+            echo "=====================================\n"
+          done
+          
+          echo "💡 This debug output shows the actual structure of your Terraform plan JSON files."
+          echo "   Compare this with your test files to ensure they match the expected format."
+
+      # ===== DEBUG: Check OPA Syntax Errors =====
+      - name: 🔍 Debug OPA Syntax Errors
+        if: steps.plan.outputs.opa_plan_ready == 'true'
+        working-directory: source-repo
+        run: |
+          echo "🔍 === OPA SYNTAX ERROR DEBUG ==="
+          echo ""
+          echo "📁 OPA policies directory structure:"
+          find ../opa-policies/ -name "*.rego" | head -10
+          echo ""
+          
+          echo "🔍 Testing OPA syntax on each policy file:"
+          for rego_file in $(find ../opa-policies/ -name "*.rego"); do
+            echo "  Testing: $rego_file"
+            opa fmt "$rego_file" --diff 2>&1 || echo "    ❌ Syntax error in $rego_file"
+          done
+          echo ""
+          
+          echo "🔍 Full OPA error output when loading policies:"
+          opa eval -d ../opa-policies/ "data.terraform.main" --format json 2>&1 || true
+          echo ""
+          
+          echo "🔍 Testing individual policy directories:"
+          for dir in $(find ../opa-policies/ -type d -name "*"); do
+            if [ -f "$dir"/*.rego ]; then
+              echo "  Testing directory: $dir"
+              opa eval -d "$dir" "data" --format json 2>&1 | head -5 || true
+              echo ""
+            fi
+          done
+          
+          echo "🔍 Checking for import syntax compatibility:"
+          grep -r "import rego.v1" ../opa-policies/ || echo "  No rego.v1 imports found"
+          echo ""
+          
+          echo "🔍 OPA version being used:"
+          opa version
           total_violations=$(echo "${total_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
           critical_violations=$(echo "${critical_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
           high_violations=$(echo "${high_violations:-0}" | tr -d '\n\r' | grep -o '[0-9]*' || echo "0")
@@ -552,17 +782,34 @@ jobs:
             // OPA results
             const validation = '${{ steps.opa.outputs.validation_status }}';
             const violations = '${{ steps.opa.outputs.total_violations }}';
+            const plansValidated = '${{ steps.opa.outputs.plans_validated }}';
+            const criticalViolations = '${{ steps.opa.outputs.critical_violations }}';
+            const highViolations = '${{ steps.opa.outputs.high_violations }}';
+            const mediumViolations = '${{ steps.opa.outputs.medium_violations }}';
+            const lowViolations = '${{ steps.opa.outputs.low_violations }}';
             
             comment += `### 🛡️ OPA Policy Validation\n`;
             if (validation === 'passed') {
-              comment += `✅ **Status**: PASSED - No policy violations\n\n`;
+              comment += `✅ **Status**: PASSED - No policy violations across ${plansValidated || 1} plan(s)\n`;
+              comment += `🔒 **Security**: All plans meet security requirements\n\n`;
             } else if (validation === 'failed') {
               comment += `❌ **Status**: FAILED\n`;
-              comment += `- **Violations**: ${violations}\n\n`;
+              comment += `- **Total Violations**: ${violations} across ${plansValidated || 1} plan(s)\n`;
+              comment += `- **Breakdown**: 🔴 ${criticalViolations || 0} Critical | 🟠 ${highViolations || 0} High | 🟡 ${mediumViolations || 0} Medium | 🟢 ${lowViolations || 0} Low\n\n`;
+              try {
+                const opaResults = fs.readFileSync('source-repo/opa-detailed-results.md', 'utf8');
+                comment += `<details>\n<summary>📋 View Detailed Validation Results</summary>\n\n`;
+                comment += opaResults;
+                comment += `\n</details>\n\n`;
+              } catch (e) {
+                console.log('No detailed OPA results found, trying legacy format...');
               try {
                 const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
                 comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
-              } catch (e) {}
+                } catch (e2) {
+                  console.log('No OPA results file found');
+                }
+              }
             } else if ('${{ steps.plan.outputs.opa_plan_ready }}' === 'false') {
               comment += `⚠️ **Status**: SKIPPED - No successful plans for validation\n\n`;
             }
@@ -614,18 +861,56 @@ jobs:
                 core.setOutput('merged', 'true');
                 core.setOutput('merge_sha', mergeResult.sha);
                 
-                // Add success comment
+                // Get PR details for notifications
+                const { data: prData } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: pr_number
+                });
+                
+                // Add success comment with team notifications
                 await github.rest.issues.createComment({
                   owner,
                   repo,
                   issue_number: pr_number,
                   body: `✅ **PR Auto-Approved & Merged!**\n\n` +
                         `🛡️ OPA validation passed - all security policies compliant\n` +
-                        `� Services validated: ${{ steps.opa.outputs.services_detected || 'All services' }}\n` +
-                        `�🔀 Changes have been merged to \`main\`\n` +
+                        `🎯 Services validated: ${{ steps.opa.outputs.services_detected || 'All services' }}\n` +
+                        `🔀 Changes have been merged to \`main\`\n` +
                         `🚀 Terraform apply will begin automatically...\n\n` +
-                        `**Merge SHA**: \`${mergeResult.sha}\``
+                        `**Merge SHA**: \`${mergeResult.sha}\`\n\n` +
+                        `🔔 **Team Notification**: @${prData.user.login} - Your changes have been automatically approved and deployed!`
                 });
+                
+                // Send additional success notification to stakeholders
+                try {
+                  const { data: reviews } = await github.rest.pulls.listReviews({
+                    owner,
+                    repo,
+                    pull_number: pr_number
+                  });
+                  
+                  const reviewers = [...new Set(reviews.map(review => review.user.login))];
+                  const assignees = prData.assignees.map(assignee => assignee.login);
+                  const allNotifyUsers = [...new Set([prData.user.login, ...reviewers, ...assignees])];
+                  
+                  if (allNotifyUsers.length > 1) { // Only send if there are multiple stakeholders
+                    const mentions = allNotifyUsers.map(user => `@${user}`).join(' ');
+                    await github.rest.issues.createComment({
+                      owner,
+                      repo,
+                      issue_number: pr_number,
+                      body: `🎉 **Deployment Success Notification**\n\n` +
+                            `${mentions}\n\n` +
+                            `✅ Security policies passed\n` +
+                            `🚀 Changes automatically merged and deployment initiated\n` +
+                            `📊 Validation results: ${{ steps.opa.outputs.total_violations || 0 }} violations found\n\n` +
+                            `*Automated notification from Centralized Terraform Controller*`
+                    });
+                  }
+                } catch (error) {
+                  console.log('⚠️ Could not send team notifications:', error.message);
+                }
                 
               } catch (error) {
                 console.log('❌ Could not merge:', error.message);
@@ -650,6 +935,24 @@ jobs:
                 state: 'closed'
               });
               
+              // Try to include detailed violation information
+              let detailedInfo = '';
+              try {
+                const fs = require('fs');
+                const detailedResults = fs.readFileSync('source-repo/opa-detailed-results.md', 'utf8');
+                detailedInfo = `\n<details>\n<summary>📋 Click to view detailed violation information</summary>\n\n${detailedResults}\n</details>\n\n`;
+              } catch (e) {
+                detailedInfo = `\n💡 **Note**: Check the workflow logs for detailed violation information.\n\n`;
+              }
+              
+              // Get PR details for notifications
+              const { data: prData } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pr_number
+              });
+              
+              // Create main comment with violation details
               await github.rest.issues.createComment({
                 owner,
                 repo,
@@ -661,17 +964,85 @@ jobs:
                       `- 🟠 High: ${{ steps.opa.outputs.high_violations }}\n` +
                       `- 🟡 Medium: ${{ steps.opa.outputs.medium_violations }}\n` +
                       `- 🟢 Low: ${{ steps.opa.outputs.low_violations }}\n\n` +
-                      `**Services Validated**: ${{ steps.opa.outputs.services_detected || 'All' }}\n\n` +
+                      `**Services Validated**: ${{ steps.opa.outputs.services_detected || 'All' }}\n` +
+                      detailedInfo +
                       `This PR has been automatically closed due to security policy violations.\n\n` +
                       `**Required Actions**:\n` +
-                      `1. Review the OPA validation results above\n` +
-                      `2. Fix all policy violations in your configuration\n` +
-                      `3. Create a new PR with corrected changes\n\n` +
+                      `1. Review the detailed violation information above\n` +
+                      `2. Fix all policy violations in your Terraform configuration\n` +
+                      `3. Ensure all required tags are present (especially \`ManagedBy\`)\n` +
+                      `4. Create a new PR with corrected changes\n\n` +
                       `---\n` +
-                      `*Security policies must pass before changes can be merged.*`
+                      `*Security policies must pass before changes can be merged.*\n\n` +
+                      `🔔 **Notifications sent to**: @${prData.user.login}, reviewers, and watchers`
               });
               
+              // Send additional notifications to key stakeholders
+              try {
+                // Get PR reviewers and assignees
+                const { data: reviews } = await github.rest.pulls.listReviews({
+                  owner,
+                  repo,
+                  pull_number: pr_number
+                });
+                
+                const reviewers = [...new Set(reviews.map(review => review.user.login))];
+                const assignees = prData.assignees.map(assignee => assignee.login);
+                const allNotifyUsers = [...new Set([prData.user.login, ...reviewers, ...assignees])];
+                
+                // Create targeted notification comment
+                if (allNotifyUsers.length > 0) {
+                  const mentions = allNotifyUsers.map(user => `@${user}`).join(' ');
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pr_number,
+                    body: `🚨 **Security Policy Violation Alert**\n\n` +
+                          `${mentions}\n\n` +
+                          `This PR has been closed due to Terraform security policy violations. ` +
+                          `Please review the violations above and create a new PR with the necessary fixes.\n\n` +
+                          `**Critical Actions Required**:\n` +
+                          `- [ ] Review policy violations\n` +
+                          `- [ ] Fix missing or incorrect tags\n` +
+                          `- [ ] Validate changes locally\n` +
+                          `- [ ] Create new PR with fixes\n\n` +
+                          `*This is an automated security notification from the Centralized Terraform Controller.*`
+                  });
+                }
+              } catch (error) {
+                console.log('⚠️ Could not send targeted notifications:', error.message);
+              }
+              
               console.log('❌ PR closed due to policy violations');
+              
+              // Cleanup feature branch after policy violation closure
+              try {
+                const branchName = prData.head.ref;
+                const protectedBranches = ['main', 'master', 'develop', 'development', 'staging', 'production'];
+                
+                if (!protectedBranches.includes(branchName)) {
+                  await github.rest.git.deleteRef({
+                    owner,
+                    repo,
+                    ref: `heads/${branchName}`
+                  });
+                  
+                  console.log(`✅ Deleted feature branch: ${branchName} after policy violation`);
+                  
+                  // Add cleanup notification
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pr_number,
+                    body: `🧹 **Branch Cleanup**: Feature branch \`${branchName}\` has been automatically deleted. ` +
+                          `Create a new branch when you're ready to submit fixes.`
+                  });
+                } else {
+                  console.log(`⚠️ Skipped deletion of protected branch: ${branchName}`);
+                }
+              } catch (cleanupError) {
+                console.log('⚠️ Could not cleanup feature branch:', cleanupError.message);
+              }
             }
 
       # ===== STEP 6: TRIGGER TERRAFORM APPLY (after successful merge) =====
@@ -813,6 +1184,76 @@ jobs:
               issue_number: ${{ github.event.client_payload.pr_number }},
               body: comment
             });
+
+      # ===== CLEANUP: DELETE FEATURE BRANCH AFTER SUCCESSFUL APPLY =====
+      - name: 🧹 Cleanup Feature Branch
+        if: github.event.client_payload.action == 'apply' && steps.apply.outputs.successful_applies > 0
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const owner = '${{ github.event.client_payload.source_owner }}';
+            const repo = '${{ github.event.client_payload.source_repo }}';
+            const pr_number = ${{ github.event.client_payload.pr_number }};
+            
+            try {
+              // Get PR details to find the feature branch name
+              const { data: prData } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pr_number
+              });
+              
+              const branchName = prData.head.ref;
+              const branchSha = prData.head.sha;
+              
+              console.log(`🔍 Found feature branch: ${branchName} (${branchSha})`);
+              
+              // Don't delete protected branches (main, master, develop, etc.)
+              const protectedBranches = ['main', 'master', 'develop', 'development', 'staging', 'production'];
+              if (protectedBranches.includes(branchName)) {
+                console.log(`⚠️ Skipping deletion of protected branch: ${branchName}`);
+                return;
+              }
+              
+              // Delete the feature branch
+              await github.rest.git.deleteRef({
+                owner,
+                repo,
+                ref: `heads/${branchName}`
+              });
+              
+              console.log(`✅ Successfully deleted feature branch: ${branchName}`);
+              
+              // Add notification comment about branch cleanup
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr_number,
+                body: `🧹 **Branch Cleanup Completed**\n\n` +
+                      `✅ Feature branch \`${branchName}\` has been automatically deleted after successful deployment.\n\n` +
+                      `**Why?** To keep the repository clean and avoid accumulating stale branches.\n\n` +
+                      `*If you need to make additional changes, please create a new feature branch.*`
+              });
+              
+            } catch (error) {
+              console.log('⚠️ Could not delete feature branch:', error.message);
+              
+              // Add comment about cleanup failure (non-blocking)
+              try {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr_number,
+                  body: `⚠️ **Branch Cleanup Notice**\n\n` +
+                        `Could not automatically delete the feature branch. This is not critical.\n\n` +
+                        `**Reason**: ${error.message}\n\n` +
+                        `*You may manually delete the branch if no longer needed.*`
+                });
+              } catch (commentError) {
+                console.log('Could not post cleanup notice:', commentError.message);
+              }
+            }
 
       # ===== UPLOAD ARTIFACTS =====
       - name: 📦 Upload Artifacts

@@ -67,6 +67,40 @@ locals {
   }
 
   # ===========================
+  # Lambda Functions Configuration
+  # ===========================
+  merged_lambda_functions = merge(
+    try(local.yaml_config.lambda_functions, {}),
+    try(var.lambda_functions, {})
+  )
+  
+  # Process Lambda functions: ensure proper IAM role configuration
+  processed_lambda_functions = {
+    for k, v in local.merged_lambda_functions : k => merge(v, {
+      # Auto-generate IAM role ARN if not provided
+      role_arn = lookup(v, "role_arn", null) != null ? v.role_arn : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/lambda-${v.function_name}-execution-role"
+      
+      # Set defaults for service integration
+      tags = merge(var.common_tags, try(v.tags, {}))
+    })
+  }
+  
+  # ===========================
+  # SQS Queues Configuration  
+  # ===========================
+  merged_sqs_queues = merge(
+    try(local.yaml_config.sqs_queues, {}),
+    try(var.sqs_queues, {})
+  )
+  
+  # Process SQS queues
+  processed_sqs_queues = {
+    for k, v in local.merged_sqs_queues : k => merge(v, {
+      tags = merge(var.common_tags, try(v.tags, {}))
+    })
+  }
+  
+  # ===========================
   # IAM Configuration
   # ===========================
   merged_iam_users = merge(
@@ -106,17 +140,21 @@ module "s3" {
 }
 
 # =============================================================================
-# MODULE: KMS KEYS
+# MODULE: KMS KEYS (Version 2.0)
 # =============================================================================
-# Creates KMS keys for encryption
-# Each key is created separately using for_each
-# Supports: key rotation, multi-region, aliases, grants
+# Creates KMS keys with enhanced features:
+# - Custom rotation periods (90-2560 days)
+# - Lifecycle protection (prevent_destroy, ignore_changes)
+# - BYOK (Bring Your Own Key) support
+# - Multi-region replication
+# - XKS (External Key Store) support
+# - Post-quantum cryptography
 # =============================================================================
 
 module "kms" {
   for_each = local.processed_kms_keys
   
-  source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/KMS"
+  source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/KMS?ref=v2.0"
 
   # Key configuration
   description              = try(each.value.description, "KMS key for ${each.key}")
@@ -125,6 +163,26 @@ module "kms" {
   multi_region             = try(each.value.multi_region, false)
   deletion_window_in_days  = try(each.value.deletion_window_in_days, 30)
   enable_key_rotation      = try(each.value.enable_key_rotation, true)
+  
+  # Version 2.0 - Custom rotation period (90-2560 days)
+  rotation_period_in_days = try(each.value.rotation_period_in_days, null)
+  
+  # Version 2.0 - Lifecycle protection
+  prevent_destroy = try(each.value.prevent_destroy, false)
+  ignore_changes_attributes = try(each.value.ignore_changes_attributes, [])
+  
+  # Version 2.0 - BYOK (Bring Your Own Key)
+  origin               = try(each.value.origin, "AWS_KMS")
+  key_material_base64  = try(each.value.key_material_base64, null)
+  valid_to             = try(each.value.valid_to, null)
+  
+  # Version 2.0 - XKS (External Key Store)
+  custom_key_store_id = try(each.value.custom_key_store_id, null)
+  xks_key_id          = try(each.value.xks_key_id, null)
+  
+  # Version 2.0 - Separate multi-region primary key
+  enable_separate_multiregion = try(each.value.enable_separate_multiregion, false)
+  replica_regions             = try(each.value.replica_regions, [])
   
   # Policy
   policy_content = each.value.policy_content

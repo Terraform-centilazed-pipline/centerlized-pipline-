@@ -42,7 +42,24 @@ class OPAValidator:
         
         # Validate directories exist
         if not self.opa_policies_dir.exists():
-            raise FileNotFoundError(f"OPA policies directory not found: {opa_policies_dir}")
+            # Provide helpful debug information about what directories do exist
+            parent_dir = self.opa_policies_dir.parent
+            if parent_dir.exists():
+                available_dirs = [d.name for d in parent_dir.iterdir() if d.is_dir()]
+                raise FileNotFoundError(
+                    f"OPA policies directory not found: {opa_policies_dir}\n"
+                    f"Available directories in {parent_dir}: {available_dirs}"
+                )
+            else:
+                raise FileNotFoundError(f"OPA policies directory not found: {opa_policies_dir}")
+        
+        # Check if the OPA policies directory contains any .rego files
+        rego_files = list(self.opa_policies_dir.rglob('*.rego'))
+        if not rego_files:
+            logger.warning(f"⚠️ No .rego files found in {opa_policies_dir}")
+            logger.warning(f"   🔍 Directory contents: {list(self.opa_policies_dir.iterdir())[:10]}")
+        elif debug:
+            logger.debug(f"✅ Found {len(rego_files)} .rego policy files")
         
         if not self.plans_dir.exists():
             raise FileNotFoundError(f"Plans directory not found: {plans_dir}")
@@ -113,6 +130,15 @@ class OPAValidator:
             
             if self.debug:
                 logger.debug(f"🔧 Running OPA command: {' '.join(cmd)}")
+                # Debug directory and policy information
+                logger.debug(f"🔧 Working directory: {self.plans_dir.parent}")
+                logger.debug(f"🔧 OPA policies dir: {self.opa_policies_dir}")
+                logger.debug(f"🔧 OPA policies exists: {self.opa_policies_dir.exists()}")
+                if self.opa_policies_dir.exists():
+                    rego_files = list(self.opa_policies_dir.rglob('*.rego'))
+                    logger.debug(f"🔧 Found .rego files: {len(rego_files)}")
+                    if rego_files:
+                        logger.debug(f"🔧 Sample .rego files: {[f.name for f in rego_files[:3]]}")
             
             result = subprocess.run(
                 cmd,
@@ -122,8 +148,12 @@ class OPAValidator:
             )
             
             if result.returncode != 0:
-                logger.warning(f"⚠️ OPA command failed (exit {result.returncode}): {result.stderr}")
-                return {'success': False, 'error': result.stderr, 'stdout': result.stdout}
+                error_msg = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
+                if self.debug:
+                    logger.warning(f"⚠️ OPA command failed (exit {result.returncode}): {error_msg}")
+                    logger.warning(f"   📋 Full stderr: {result.stderr}")
+                    logger.warning(f"   📋 Full stdout: {result.stdout}")
+                return {'success': False, 'error': error_msg, 'stdout': result.stdout, 'stderr': result.stderr}
             
             # Try to parse JSON output
             try:
@@ -260,10 +290,15 @@ class OPAValidator:
         report = {
             'summary': {
                 'total_plans': total_plans,
+                'plans_validated': total_plans,  # Add this for workflow compatibility
                 'successful_validations': successful_validations,
                 'failed_validations': total_plans - successful_validations,
                 'total_violations': total_violations,
                 'violations_by_severity': aggregate_violations,
+                'critical_violations': aggregate_violations['critical'],  # Add individual fields
+                'high_violations': aggregate_violations['high'],
+                'medium_violations': aggregate_violations['medium'], 
+                'low_violations': aggregate_violations['low'],
                 'services_detected': sorted(list(all_services)),
                 'validation_status': self._determine_validation_status(total_violations, successful_validations, total_plans)
             },
@@ -295,6 +330,75 @@ class OPAValidator:
             logger.info(f"📄 Report saved to: {output_file}")
         except Exception as e:
             logger.error(f"❌ Error saving report: {e}")
+    
+    def save_detailed_markdown_report(self, report: Dict[str, Any]):
+        """Save a detailed markdown report for PR comments"""
+        try:
+            summary = report['summary']
+            violations = report.get('violations', [])
+            
+            markdown_content = "## 🛡️ OPA Policy Validation Details\n\n"
+            
+            if summary['validation_status'] == 'failed':
+                markdown_content += f"❌ **Validation Failed**: {summary['total_violations']} violations found\n\n"
+                
+                if summary['failed_validations'] > 0:
+                    markdown_content += f"⚠️ **{summary['failed_validations']} plan(s) had OPA command errors**\n\n"
+                
+                if violations:
+                    markdown_content += "### 📋 Violation Details\n\n"
+                    
+                    # Group violations by severity
+                    violations_by_severity = {}
+                    for violation in violations:
+                        severity = violation.get('severity', 'unknown')
+                        if severity not in violations_by_severity:
+                            violations_by_severity[severity] = []
+                        violations_by_severity[severity].append(violation)
+                    
+                    # Display violations in order of severity
+                    severity_order = ['critical', 'high', 'medium', 'low']
+                    for severity in severity_order:
+                        if severity in violations_by_severity:
+                            emoji = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟢'}.get(severity, '⚪')
+                            markdown_content += f"#### {emoji} {severity.title()} Violations\n\n"
+                            
+                            for violation in violations_by_severity[severity]:
+                                message = violation.get('message', 'No message provided')
+                                resource = violation.get('resource', 'Unknown resource')
+                                plan = violation.get('source_plan', 'Unknown plan')
+                                
+                                markdown_content += f"- **{message}**\n"
+                                markdown_content += f"  - 📄 Plan: `{plan}`\n"
+                                markdown_content += f"  - 🎯 Resource: `{resource}`\n"
+                                
+                                # Add additional details if available
+                                if 'details' in violation:
+                                    markdown_content += f"  - 💡 Details: {violation['details']}\n"
+                                
+                                markdown_content += "\n"
+                
+                # Add remediation guidance
+                markdown_content += "### 🔧 How to Fix\n\n"
+                markdown_content += "1. Review the violations listed above\n"
+                markdown_content += "2. Update your Terraform configuration to address each violation\n"
+                markdown_content += "3. Ensure all required tags are present (especially `ManagedBy`)\n"
+                markdown_content += "4. Commit your changes and push to update this PR\n\n"
+                
+            else:
+                markdown_content += "✅ **Validation Passed**: All policies comply with security requirements\n\n"
+            
+            markdown_content += f"**Plans Validated**: {summary['total_plans']}\n"
+            markdown_content += f"**Services Detected**: {', '.join(summary['services_detected']) if summary['services_detected'] else 'None'}\n"
+            
+            # Save to file that workflow can read
+            with open('opa-detailed-results.md', 'w') as f:
+                f.write(markdown_content)
+            
+            logger.info("📄 Detailed markdown report saved to: opa-detailed-results.md")
+            
+        except Exception as e:
+            logger.error(f"❌ Error saving detailed markdown report: {e}")
     
     def print_summary(self, report: Dict[str, Any]):
         """Print a summary of the validation results"""
@@ -363,6 +467,9 @@ class OPAValidator:
         # Save report if requested
         if output_file:
             self.save_report(report, output_file)
+        
+        # Always save detailed markdown report for PR comments
+        self.save_detailed_markdown_report(report)
         
         # Print summary
         self.print_summary(report)
