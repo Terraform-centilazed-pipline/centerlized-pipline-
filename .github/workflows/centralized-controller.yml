@@ -379,7 +379,7 @@ jobs:
           # This handles multiple deployments from different accounts properly
           set +e  # Don't exit on error - we want to show results even if some plans fail
           python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py plan \
-            --deployments-json deployments.json \
+            --changed-files "${{ steps.changed-files.outputs.files }}" \
             --output-summary plan-results.json \
             --debug
           
@@ -389,10 +389,10 @@ jobs:
           echo "🔍 Deployment manager exit code: $plan_exit_code"
           
           if [ -f plan-results.json ]; then
-            total=$(jq -r '.total_deployments // 0' plan-results.json)
-            successful=$(jq -r '.successful_plans // 0' plan-results.json)
-            failed=$(jq -r '.failed_plans // 0' plan-results.json)
-            has_changes=$(jq -r '.has_changes // false' plan-results.json)
+            total=$(jq -r '.summary.total // 0' plan-results.json)
+            successful=$(jq -r '.summary.successful // 0' plan-results.json)
+            failed=$(jq -r '.summary.failed // 0' plan-results.json)
+            has_changes=$(jq -r 'if (.successful | length > 0) then (.successful[] | select(.has_changes == true)) else false end' plan-results.json | jq -s 'length > 0')
             
             echo "📊 Plan Results: $successful/$total successful, $failed failed"
             
@@ -1085,8 +1085,8 @@ jobs:
           
           # Use the deployment orchestrator to run applies
           set +e  # Don't exit on error - we want to show results even if some applies fail
-          python3 ../controller/scripts/terraform-deployment-orchestrator.py apply \
-            --deployments-json deployments.json \
+          python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py apply \
+            --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
             --output-summary apply-results.json \
             --debug
           
@@ -1096,9 +1096,9 @@ jobs:
           echo "🔍 Apply exit code: $apply_exit_code"
           
           if [ -f apply-results.json ]; then
-            total=$(jq -r '.total_deployments // 0' apply-results.json)
-            successful=$(jq -r '.successful_applies // 0' apply-results.json)
-            failed=$(jq -r '.failed_applies // 0' apply-results.json)
+            total=$(jq -r '.summary.total // 0' apply-results.json)
+            successful=$(jq -r '.summary.successful // 0' apply-results.json)
+            failed=$(jq -r '.summary.failed // 0' apply-results.json)
             
             echo "📊 Apply Results: $successful/$total successful, $failed failed"
             
