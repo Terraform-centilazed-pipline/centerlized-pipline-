@@ -723,10 +723,24 @@ jobs:
           script: |
             const fs = require('fs');
             
+            // Determine overall status for visual feedback
+            const validation = '${{ steps.opa.outputs.validation_status }}';
+            const hasChanges = '${{ steps.plan.outputs.has_changes }}' === 'true';
+            const planFailed = '${{ steps.plan.outputs.failed_plans }}' !== '0';
+            
+            const statusIcon = validation === 'passed' ? '✅' : validation === 'failed' ? '❌' : '⚠️';
+            const statusText = validation === 'passed' ? '**APPROVED**' : validation === 'failed' ? '**BLOCKED**' : '**PENDING**';
+            const statusColor = validation === 'passed' ? '🟢' : validation === 'failed' ? '🔴' : '🟡';
+            
             let comment = `## 🚀 Centralized Terraform Controller Results\n\n`;
-            comment += `**Source Repo**: \`${{ github.event.client_payload.source_repo }}\`\n`;
-            comment += `**PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }})\n`;
-            comment += `**Branch**: \`${{ github.event.client_payload.pr_head_ref }}\`\n\n`;
+            
+            // Status banner
+            comment += `> ${statusIcon} **Overall Status**: ${statusColor} ${statusText}\n`;
+            comment += `> 📦 **Source**: \`${{ github.event.client_payload.source_repo }}\`\n`;
+            comment += `> 🔀 **PR**: [#${{ github.event.client_payload.pr_number }}](${{ github.event.client_payload.pr_url }}) (branch: \`${{ github.event.client_payload.pr_head_ref }}\`)\n`;
+            comment += `> 🔄 **Changes Detected**: ${hasChanges ? '**Yes**' : 'No'}\n`;
+            comment += `\n`;
+            comment += `---\n\n`;
             
             // Plan results
             const total = '${{ steps.plan.outputs.total_deployments }}';
@@ -735,52 +749,205 @@ jobs:
             const hasChanges = '${{ steps.plan.outputs.has_changes }}';
             
             if (total && total !== '0') {
-              comment += `### 📊 Terraform Plan Summary\n`;
-              comment += `| Metric | Count |\n`;
+              comment += `### 📊 Terraform Plan Summary\n\n`;
+              comment += `| Metric | Value |\n`;
               comment += `|--------|-------|\n`;
-              comment += `| 📋 Total Deployments | ${total} |\n`;
-              comment += `| ✅ Successful Plans | ${successful} |\n`;
-              comment += `| ❌ Failed Plans | ${failed} |\n`;
-              comment += `| 🔄 Has Changes | ${hasChanges === 'true' ? 'Yes' : 'No'} |\n\n`;
+              comment += `| 📋 Total Deployments | **${total}** |\n`;
+              comment += `| ✅ Successful Plans | **${successful}** |\n`;
+              comment += `| ❌ Failed Plans | **${failed}** |\n`;
+              comment += `| 🔄 Has Changes | **${hasChanges === 'true' ? 'Yes' : 'No'}** |\n\n`;
               
-              // Add detailed plan results if available
+              // Add detailed plan results with DEEP resource analysis
               try {
                 const planResults = fs.readFileSync('source-repo/plan-results.json', 'utf8');
                 const results = JSON.parse(planResults);
                 
-                if (results.plans && results.plans.length > 0) {
-                  comment += `### 📋 Deployment Details\n`;
-                  comment += `| Deployment | Status | Changes |\n`;
-                  comment += `|------------|--------|----------|\n`;
+                if (results.successful && results.successful.length > 0) {
+                  comment += `### ✅ Successful Deployments\n\n`;
                   
-                  results.plans.forEach(plan => {
-                    const status = plan.status === 'success' ? '✅' : '❌';
-                    const changes = plan.has_changes ? '🔄 Yes' : '➖ None';
-                    comment += `| ${plan.deployment} | ${status} | ${changes} |\n`;
+                  results.successful.forEach(result => {
+                    const dep = result.deployment;
+                    const backendKey = result.backend_key || 'N/A';
+                    const services = result.services ? result.services.join(', ') : 'N/A';
+                    
+                    comment += `<table>\n`;
+                    comment += `<tr><td colspan="2">\n\n`;
+                    comment += `#### 🎯 ${dep.account_name} / ${dep.region} / ${dep.project}\n\n`;
+                    comment += `</td></tr>\n`;
+                    comment += `<tr><td><b>🔑 Backend Key</b></td><td><code>${backendKey}</code></td></tr>\n`;
+                    comment += `<tr><td><b>🏗️ Services</b></td><td>${services}</td></tr>\n`;
+                    comment += `<tr><td><b>🌍 Environment</b></td><td>${dep.environment || 'N/A'}</td></tr>\n`;
+                    comment += `<tr><td><b>📁 Deployment Path</b></td><td><code>${dep.deployment_dir || 'N/A'}</code></td></tr>\n`;
+                    comment += `</table>\n\n`;
+                    
+                    // DEEP Parse terraform output for resource changes
+                    if (result.has_changes && result.output) {
+                      const output = result.output;
+                      
+                      // Extract resource changes summary
+                      const updateMatch = output.match(/(\d+) to add, (\d+) to change, (\d+) to destroy/);
+                      if (updateMatch) {
+                        const [_, toAdd, toChange, toDestroy] = updateMatch;
+                        const totalChanges = parseInt(toAdd) + parseInt(toChange) + parseInt(toDestroy);
+                        
+                        comment += `\n**📊 Change Summary** (${totalChanges} total operations):\n\n`;
+                        comment += `<table>\n`;
+                        if (toAdd !== '0') comment += `<tr><td>🟢 <b>Create</b></td><td align="right"><b>${toAdd}</b> resource(s)</td><td>New resources will be provisioned</td></tr>\n`;
+                        if (toChange !== '0') comment += `<tr><td>🟡 <b>Update</b></td><td align="right"><b>${toChange}</b> resource(s)</td><td>Existing resources will be modified</td></tr>\n`;
+                        if (toDestroy !== '0') comment += `<tr><td>🔴 <b>Destroy</b></td><td align="right"><b>${toDestroy}</b> resource(s)</td><td>⚠️ Resources will be deleted!</td></tr>\n`;
+                        comment += `</table>\n\n`;
+                      }
+                      
+                      // Extract and parse DETAILED resource information
+                      const lines = output.split('\n');
+                      const resourceChanges = [];
+                      let currentResource = null;
+                      let inResourceBlock = false;
+                      
+                      for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        
+                        // Detect resource operations
+                        if (line.match(/^\s*#\s+module\./)) {
+                          if (currentResource) resourceChanges.push(currentResource);
+                          
+                          const resourceMatch = line.match(/^\s*#\s+(module\.[^\s]+)/);
+                          if (resourceMatch) {
+                            currentResource = {
+                              name: resourceMatch[1],
+                              action: line.includes('will be created') ? 'create' :
+                                     line.includes('will be destroyed') ? 'destroy' :
+                                     line.includes('must be replaced') ? 'replace' :
+                                     line.includes('will be updated') ? 'update' : 'modify',
+                              attributes: []
+                            };
+                            inResourceBlock = true;
+                          }
+                        }
+                        
+                        // Capture attribute changes
+                        if (inResourceBlock && currentResource) {
+                          // Detect additions (+)
+                          if (line.match(/^\s*\+\s+/)) {
+                            const attrMatch = line.match(/^\s*\+\s+([^\s=]+)\s*=\s*(.+)/);
+                            if (attrMatch) {
+                              currentResource.attributes.push({
+                                type: 'add',
+                                name: attrMatch[1],
+                                value: attrMatch[2].replace(/^"(.*)"$/, '$1')
+                              });
+                            }
+                          }
+                          // Detect updates (~)
+                          else if (line.match(/^\s*~\s+/)) {
+                            const attrMatch = line.match(/^\s*~\s+([^\s=]+)\s*=\s*"?([^"]+)"?\s*->\s*"?([^"]+)"?/);
+                            if (attrMatch) {
+                              currentResource.attributes.push({
+                                type: 'update',
+                                name: attrMatch[1],
+                                oldValue: attrMatch[2],
+                                newValue: attrMatch[3]
+                              });
+                            }
+                          }
+                          // Detect deletions (-)
+                          else if (line.match(/^\s*-\s+/)) {
+                            const attrMatch = line.match(/^\s*-\s+([^\s=]+)\s*=\s*(.+)/);
+                            if (attrMatch) {
+                              currentResource.attributes.push({
+                                type: 'delete',
+                                name: attrMatch[1],
+                                value: attrMatch[2].replace(/^"(.*)"$/, '$1')
+                              });
+                            }
+                          }
+                          
+                          // End of resource block
+                          if (line.match(/^\s*}\s*$/) && !line.includes('->')) {
+                            inResourceBlock = false;
+                          }
+                        }
+                      }
+                      if (currentResource) resourceChanges.push(currentResource);
+                      
+                      // Display DETAILED resource changes
+                      if (resourceChanges.length > 0) {
+                        comment += `<details>\n<summary>🔍 <b>Detailed Resource Analysis</b> (${resourceChanges.length} resources with ${resourceChanges.reduce((sum, r) => sum + r.attributes.length, 0)} attribute changes)</summary>\n\n`;
+                        
+                        resourceChanges.slice(0, 15).forEach((resource, idx) => {
+                          const actionIcon = resource.action === 'create' ? '🟢 ➕' :
+                                           resource.action === 'destroy' ? '🔴 🗑️' :
+                                           resource.action === 'replace' ? '🟠 🔄' :
+                                           '🟡 📝';
+                          const actionText = resource.action.toUpperCase();
+                          
+                          comment += `\n**${idx + 1}. ${actionIcon} ${actionText}** \`${resource.name}\`\n\n`;
+                          
+                          if (resource.attributes.length > 0) {
+                            comment += `<table>\n`;
+                            comment += `<tr><th>Action</th><th>Attribute</th><th>Change Details</th></tr>\n`;
+                            
+                            resource.attributes.slice(0, 10).forEach(attr => {
+                              if (attr.type === 'add') {
+                                comment += `<tr><td>🟢 ➕</td><td><code>${attr.name}</code></td><td><code>${attr.value}</code></td></tr>\n`;
+                              } else if (attr.type === 'update') {
+                                comment += `<tr><td>🟡 📝</td><td><code>${attr.name}</code></td><td><code>${attr.oldValue}</code> → <code>${attr.newValue}</code></td></tr>\n`;
+                              } else if (attr.type === 'delete') {
+                                comment += `<tr><td>🔴 ➖</td><td><code>${attr.name}</code></td><td><s><code>${attr.value}</code></s></td></tr>\n`;
+                              }
+                            });
+                            
+                            if (resource.attributes.length > 10) {
+                              comment += `<tr><td colspan="3"><i>... and ${resource.attributes.length - 10} more attribute(s)</i></td></tr>\n`;
+                            }
+                            
+                            comment += `</table>\n`;
+                          }
+                        });
+                        
+                        if (resourceChanges.length > 15) {
+                          comment += `\n**📋 Additional Resources**: ${resourceChanges.length - 15} more resource(s) affected (see full plan output for details)\n`;
+                        }
+                        
+                        comment += `\n</details>\n\n`;
+                      }
+                    } else if (!result.has_changes) {
+                      comment += `\n✨ **No changes detected** - Infrastructure matches desired state perfectly!\n\n`;
+                      comment += `> 💚 All resources are up-to-date. No action required.\n\n`;
+                    }
+                    
+                    comment += `\n---\n\n`;
                   });
-                  comment += `\n`;
                 }
                 
-                // Add plan markdown if available
-                const planMarkdownDir = 'source-repo/plan-markdown';
-                if (fs.existsSync(planMarkdownDir)) {
-                  const markdownFiles = fs.readdirSync(planMarkdownDir).filter(f => f.endsWith('.md'));
+                if (results.failed && results.failed.length > 0) {
+                  comment += `### ❌ Failed Deployments\n\n`;
                   
-                  if (markdownFiles.length > 0) {
-                    comment += `### 🔧 Terraform Plans\n`;
-                    markdownFiles.forEach(file => {
-                      const content = fs.readFileSync(`${planMarkdownDir}/${file}`, 'utf8');
-                      // Truncate if too long
-                      const truncated = content.length > 5000 ? content.substring(0, 5000) + '\n... (truncated)' : content;
-                      comment += truncated + '\n\n';
-                    });
-                  }
+                  results.failed.forEach(result => {
+                    const dep = result.deployment;
+                    const error = result.error || 'Unknown error';
+                    
+                    comment += `#### 🚨 ${dep.account_name}/${dep.region}/${dep.project}\n\n`;
+                    comment += `**Error**: \`${error}\`\n\n`;
+                    
+                    if (result.error_detail) {
+                      comment += `<details>\n<summary>🔍 Error Details</summary>\n\n`;
+                      comment += `\`\`\`\n${result.error_detail.substring(0, 1000)}\n\`\`\`\n`;
+                      if (result.error_detail.length > 1000) {
+                        comment += `\n... (truncated)\n`;
+                      }
+                      comment += `</details>\n\n`;
+                    }
+                    
+                    comment += `---\n\n`;
+                  });
                 }
               } catch (e) {
-                console.log('Could not read plan results:', e.message);
+                console.log('Could not parse plan results:', e.message);
+                comment += `⚠️ Plan results available but couldn't parse details\n\n`;
               }
             } else {
-              comment += `### 📋 Terraform Plan\n`;
+              comment += `### 📋 Terraform Plan\n\n`;
               comment += `ℹ️ No deployments found or no changes detected\n\n`;
             }
             
@@ -793,38 +960,88 @@ jobs:
             const mediumViolations = '${{ steps.opa.outputs.medium_violations }}';
             const lowViolations = '${{ steps.opa.outputs.low_violations }}';
             
-            comment += `### 🛡️ OPA Policy Validation\n`;
+            comment += `### 🛡️ OPA Policy Validation\n\n`;
             if (validation === 'passed') {
-              comment += `✅ **Status**: PASSED - No policy violations across ${plansValidated || 1} plan(s)\n`;
-              comment += `🔒 **Security**: All plans meet security requirements\n\n`;
+              comment += `✅ **Status**: **PASSED** - All policies compliant!\n\n`;
+              comment += `| Metric | Value |\n`;
+              comment += `|--------|-------|\n`;
+              comment += `| 📋 Plans Validated | **${plansValidated || 1}** |\n`;
+              comment += `| ✅ Policy Compliance | **100%** |\n`;
+              comment += `| 🔒 Security Status | **Approved** |\n\n`;
+              comment += `✨ All ${plansValidated || 1} plan(s) meet security and compliance requirements.\n\n`;
             } else if (validation === 'failed') {
-              comment += `❌ **Status**: FAILED\n`;
-              comment += `- **Total Violations**: ${violations} across ${plansValidated || 1} plan(s)\n`;
-              comment += `- **Breakdown**: 🔴 ${criticalViolations || 0} Critical | 🟠 ${highViolations || 0} High | 🟡 ${mediumViolations || 0} Medium | 🟢 ${lowViolations || 0} Low\n\n`;
+              comment += `❌ **Status**: **FAILED** - Policy violations detected\n\n`;
+              
+              const total = parseInt(violations || 0);
+              const critical = parseInt(criticalViolations || 0);
+              const high = parseInt(highViolations || 0);
+              const medium = parseInt(mediumViolations || 0);
+              const low = parseInt(lowViolations || 0);
+              
+              comment += `**⚠️ Violations Summary** (${total} total across ${plansValidated || 1} plan(s)):\n\n`;
+              comment += `| Severity | Count | Status |\n`;
+              comment += `|----------|-------|--------|\n`;
+              if (critical > 0) comment += `| 🔴 **Critical** | **${critical}** | ⛔ Must Fix |\n`;
+              if (high > 0) comment += `| 🟠 **High** | **${high}** | ⚠️ Priority |\n`;
+              if (medium > 0) comment += `| 🟡 **Medium** | **${medium}** | ⚡ Review |\n`;
+              if (low > 0) comment += `| 🔵 **Low** | **${low}** | ℹ️ Optional |\n`;
+              comment += `\n`;
+              
               try {
                 const opaResults = fs.readFileSync('source-repo/opa-detailed-results.md', 'utf8');
-                comment += `<details>\n<summary>📋 View Detailed Validation Results</summary>\n\n`;
+                comment += `<details>\n<summary>🔍 Detailed Validation Results (click to expand)</summary>\n\n`;
                 comment += opaResults;
                 comment += `\n</details>\n\n`;
               } catch (e) {
                 console.log('No detailed OPA results found, trying legacy format...');
-              try {
-                const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
-                comment += `\`\`\`\n${opaResult}\n\`\`\`\n\n`;
+                try {
+                  const opaResult = fs.readFileSync('source-repo/opa-result.txt', 'utf8');
+                  comment += `<details>\n<summary>🔍 Detailed Validation Results (click to expand)</summary>\n\n`;
+                  comment += `\`\`\`\n${opaResult}\n\`\`\`\n`;
+                  comment += `\n</details>\n\n`;
                 } catch (e2) {
                   console.log('No OPA results file found');
                 }
               }
+              
+              comment += `> **🔴 Action Required**: Please address the violations above before merging.\n`;
+              if (critical > 0 || high > 0) {
+                comment += `> **⚠️ Blocking Issues**: ${critical + high} critical/high severity violation(s) must be fixed.\n`;
+              }
+              comment += `\n`;
             } else if ('${{ steps.plan.outputs.opa_plan_ready }}' === 'false') {
-              comment += `⚠️ **Status**: SKIPPED - No successful plans for validation\n\n`;
+              comment += `⚠️ **Status**: SKIPPED - No successful plans available for validation\n\n`;
             }
             
-            // Security scan results - REMOVED (No Checkov anymore)
-            // Only OPA validation is used now
+            // Add helpful footer with next steps
+            comment += `\n---\n\n`;
+            comment += `### 📚 Resources & Next Steps\n\n`;
             
-            comment += `\n---\n`;
-            comment += `🤖 *Centralized Controller* | `;
-            comment += `[View Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})`;
+            if (validation === 'passed') {
+              comment += `✅ **Your deployment is approved!**\n\n`;
+              comment += `**What happens next?**\n`;
+              comment += `1. ✅ This PR will be **automatically merged**\n`;
+              comment += `2. 🚀 Terraform apply will execute automatically\n`;
+              comment += `3. 📧 You'll receive notifications about deployment progress\n\n`;
+            } else if (validation === 'failed') {
+              comment += `❌ **Action required to proceed:**\n\n`;
+              comment += `1. 📝 Review the policy violations listed above\n`;
+              comment += `2. 🔧 Update your Terraform code to fix the issues\n`;
+              comment += `3. 🔄 Push your changes to trigger re-validation\n`;
+              comment += `4. ✅ Once all policies pass, PR will auto-merge\n\n`;
+              comment += `**Need help?** Check [OPA Policy Documentation](https://github.com/Terraform-centilazed-pipline/opa-poclies)\n\n`;
+            }
+            
+            comment += `<details>\n<summary>🔗 Useful Links</summary>\n\n`;
+            comment += `- 🤖 [View Workflow Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})\n`;
+            comment += `- 📋 [OPA Policy Repository](https://github.com/Terraform-centilazed-pipline/opa-poclies)\n`;
+            comment += `- 🏗️ [Terraform Modules](https://github.com/Terraform-centilazed-pipline/tf-module)\n`;
+            comment += `- 📖 [Deployment Guide](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/blob/main/README.md)\n`;
+            comment += `</details>\n\n`;
+            
+            comment += `---\n`;
+            comment += `🤖 *Automated by Centralized Terraform Controller* | `;
+            comment += `⏰ *Generated at ${new Date().toISOString()}*`;
             
             await github.rest.issues.createComment({
               owner: '${{ github.event.client_payload.source_owner }}',
