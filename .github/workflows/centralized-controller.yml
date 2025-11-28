@@ -746,7 +746,7 @@ jobs:
             const total = '${{ steps.plan.outputs.total_deployments }}';
             const successful = '${{ steps.plan.outputs.successful_plans }}';
             const failed = '${{ steps.plan.outputs.failed_plans }}';
-            const hasChanges = '${{ steps.plan.outputs.has_changes }}';
+            const planHasChanges = '${{ steps.plan.outputs.has_changes }}';
             
             if (total && total !== '0') {
               comment += `### 📊 Terraform Plan Summary\n\n`;
@@ -755,7 +755,7 @@ jobs:
               comment += `| 📋 Total Deployments | **${total}** |\n`;
               comment += `| ✅ Successful Plans | **${successful}** |\n`;
               comment += `| ❌ Failed Plans | **${failed}** |\n`;
-              comment += `| 🔄 Has Changes | **${hasChanges === 'true' ? 'Yes' : 'No'}** |\n\n`;
+              comment += `| 🔄 Has Changes | **${planHasChanges === 'true' ? 'Yes' : 'No'}** |\n\n`;
               
               // Add detailed plan results with DEEP resource analysis
               try {
