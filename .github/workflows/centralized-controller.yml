@@ -69,7 +69,7 @@ jobs:
       - name: Checkout OPA Policies
         uses: actions/checkout@v4
         with:
-          repository: Terraform-centilazed-pipline/OPA-Poclies
+          repository: Terraform-centilazed-pipline/opa-poclies
           path: opa-policies
           token: ${{ secrets.GITHUB_TOKEN }}
 
