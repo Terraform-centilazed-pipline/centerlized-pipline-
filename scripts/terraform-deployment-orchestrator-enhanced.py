@@ -602,6 +602,75 @@ Please fix the errors and push to a new branch.
                 'output': f"Error running command: {e}"
             }
 
+    def _copy_referenced_policy_files(self, tfvars_file: Path, dest_dir: Path, deployment: Dict):
+        """
+        Copy policy JSON files referenced in tfvars to the destination directory.
+        Maintains the same directory structure so Terraform can find them.
+        """
+        import re
+        
+        debug_print(f"🔍 _copy_referenced_policy_files called for: {tfvars_file}")
+        debug_print(f"   Dest dir: {dest_dir}")
+        debug_print(f"   Working dir: {self.working_dir}")
+        
+        try:
+            with open(tfvars_file, 'r') as f:
+                tfvars_content = f.read()
+            
+            debug_print(f"   Tfvars content length: {len(tfvars_content)} bytes")
+            
+            # Find all JSON file references: bucket_policy_file = "Accounts/xxx/yyy.json"
+            json_pattern = r'["\']([Aa]ccounts/[^"\']+\.json)["\']'
+            json_files = re.findall(json_pattern, tfvars_content)
+            
+            debug_print(f"   Regex pattern: {json_pattern}")
+            debug_print(f"   JSON files found by regex: {json_files}")
+            
+            if not json_files:
+                debug_print("No policy JSON files referenced in tfvars")
+                return
+            
+            debug_print(f"Found {len(json_files)} policy file references in tfvars")
+            
+            for json_file_path in json_files:
+                filename = Path(json_file_path).name
+                debug_print(f"Looking for policy file: {filename}")
+                
+                source_file = None
+                
+                # Try the exact path from tfvars (relative to working_dir)
+                candidate1 = self.working_dir / json_file_path
+                if candidate1.exists():
+                    source_file = candidate1
+                    debug_print(f"✅ Found policy file: {candidate1}")
+                else:
+                    # Look in the deployment directory
+                    deployment_dir = Path(deployment['deployment_dir'])
+                    if not deployment_dir.is_absolute():
+                        deployment_dir = self.working_dir / deployment_dir
+                    
+                    candidate2 = deployment_dir / filename
+                    if candidate2.exists():
+                        source_file = candidate2
+                        debug_print(f"✅ Found policy file: {candidate2}")
+                
+                if source_file:
+                    # Destination preserves the tfvars path (what terraform expects)
+                    dest_file = dest_dir / json_file_path
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_file, dest_file)
+                    print(f"✅ Copied policy file: {filename}")
+                    debug_print(f"   From: {source_file}")
+                    debug_print(f"   To:   {dest_file}")
+                else:
+                    print(f"⚠️ Warning: Policy file '{filename}' not found")
+                    
+        except Exception as e:
+            print(f"⚠️ Warning: Error copying policy files: {e}")
+            debug_print(f"Error in _copy_referenced_policy_files: {e}")
+            import traceback
+            debug_print(traceback.format_exc())
+
     def find_deployments(self, changed_files=None, filters=None):
         """Find deployments to process from changed files"""
         debug_print(f"find_deployments called with changed_files={changed_files}, filters={filters}")
@@ -913,76 +982,6 @@ def main():
         if DEBUG:
             traceback.print_exc()
         return 1
-
-# Add _copy_referenced_policy_files method to TerraformOrchestrator class
-def _copy_referenced_policy_files_standalone(self, tfvars_file: Path, dest_dir: Path, deployment: Dict):
-    """
-    Copy policy JSON files referenced in tfvars to the destination directory.
-    Maintains the same directory structure so Terraform can find them.
-    """
-    import re
-    
-    debug_print(f"🔍 _copy_referenced_policy_files called for: {tfvars_file}")
-    debug_print(f"   Dest dir: {dest_dir}")
-    debug_print(f"   Working dir: {self.working_dir}")
-    
-    try:
-        with open(tfvars_file, 'r') as f:
-            tfvars_content = f.read()
-        
-        debug_print(f"   Tfvars content length: {len(tfvars_content)} bytes")
-        
-        # Find all JSON file references: bucket_policy_file = "Accounts/xxx/yyy.json"
-        json_pattern = r'["\']([Aa]ccounts/[^"\']+\.json)["\']'
-        json_files = re.findall(json_pattern, tfvars_content)
-        
-        debug_print(f"   Regex pattern: {json_pattern}")
-        debug_print(f"   JSON files found by regex: {json_files}")
-        
-        if not json_files:
-            debug_print("No policy JSON files referenced in tfvars")
-            return
-        
-        debug_print(f"Found {len(json_files)} policy file references in tfvars")
-        
-        for json_file_path in json_files:
-            filename = Path(json_file_path).name
-            debug_print(f"Looking for policy file: {filename}")
-            
-            source_file = None
-            
-            # Try the exact path from tfvars (relative to working_dir)
-            candidate1 = self.working_dir / json_file_path
-            if candidate1.exists():
-                source_file = candidate1
-                debug_print(f"✅ Found policy file: {candidate1}")
-            else:
-                # Look in the deployment directory
-                deployment_dir = Path(deployment['deployment_dir'])
-                if not deployment_dir.is_absolute():
-                    deployment_dir = self.working_dir / deployment_dir
-                
-                candidate2 = deployment_dir / filename
-                if candidate2.exists():
-                    source_file = candidate2
-                    debug_print(f"✅ Found policy file: {candidate2}")
-            
-            if source_file:
-                # Destination preserves the tfvars path (what terraform expects)
-                dest_file = dest_dir / json_file_path
-                dest_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_file, dest_file)
-                print(f"✅ Copied policy file: {filename}")
-                debug_print(f"   From: {source_file}")
-                debug_print(f"   To:   {dest_file}")
-            else:
-                print(f"⚠️ Warning: Policy file '{filename}' not found")
-                
-    except Exception as e:
-        print(f"⚠️ Warning: Error copying policy files: {e}")
-
-# Attach method to class
-TerraformOrchestrator._copy_referenced_policy_files = _copy_referenced_policy_files_standalone
 
 if __name__ == "__main__":
     import sys
