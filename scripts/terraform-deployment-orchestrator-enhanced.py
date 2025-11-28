@@ -496,9 +496,9 @@ Please fix the errors and push to a new branch.
                 # Save plan to file for JSON conversion
                 plan_filename = f"{deployment['account_name']}-{deployment['project']}.tfplan"
                 plan_file = main_dir / plan_filename
-                cmd = ['plan', '-detailed-exitcode', '-input=false', '-var-file=terraform.tfvars', '-no-color', f'-out={plan_filename}']
+                cmd = ['plan', '-detailed-exitcode', '-input=false', '-refresh=true', '-var-file=terraform.tfvars', '-no-color', f'-out={plan_filename}']
             elif action == "apply":
-                cmd = ['apply', '-auto-approve', '-input=false', '-var-file=terraform.tfvars', '-no-color']
+                cmd = ['apply', '-auto-approve', '-input=false', '-refresh=true', '-var-file=terraform.tfvars', '-no-color']
             else:
                 cmd = [action, '-input=false', '-var-file=terraform.tfvars', '-no-color']
             
