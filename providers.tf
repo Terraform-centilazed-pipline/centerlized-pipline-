@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.0.0"
+  required_version = ">= 1.11.0"
 
   backend "s3" {
     bucket  = "terraform-elb-mdoule-poc"

@@ -471,8 +471,9 @@ Please fix the errors and push to a new branch.
                 traceback.print_exc()
             
             # Initialize Terraform with dynamic backend
+            # -upgrade flag ensures latest module versions are downloaded from GitHub
             init_cmd = [
-                'init', '-input=false',
+                'init', '-input=false', '-upgrade',
                 f'-backend-config=key={backend_key}',
                 f'-backend-config=region=us-east-1'
             ]
