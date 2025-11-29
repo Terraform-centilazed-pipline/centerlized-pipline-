@@ -1,0 +1,17 @@
+{
+  "deployments": [
+    {
+      "file": "Accounts/test-4-poc-1/test-4-poc-1.tfvars",
+      "account_id": "test-4-poc-1",
+      "account_name": "test-4-poc-1",
+      "region": "us-east-1",
+      "project": "test-4-poc-1",
+      "deployment_dir": "Accounts/test-4-poc-1",
+      "environment": "poc",
+      "deployment_key": "test-4-poc-1-us-east-1-test-4-poc-1",
+      "tfvars_file": "Accounts/test-4-poc-1/test-4-poc-1.tfvars"
+    }
+  ],
+  "total": 1,
+  "total_deployments": 1
+}

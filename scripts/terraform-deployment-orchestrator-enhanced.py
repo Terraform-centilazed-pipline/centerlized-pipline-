@@ -529,7 +529,8 @@ Please fix the errors and push to a new branch.
                     json_filename = f"{deployment['account_name']}-{deployment['project']}.json"
                     json_file = json_dir / json_filename
                     
-                    show_result = self._run_terraform_command(['show', '-json', plan_filename], main_dir)
+                    # IMPORTANT: Use full path to plan file (not just filename)
+                    show_result = self._run_terraform_command(['show', '-json', str(plan_file)], main_dir)
                     if show_result['returncode'] == 0:
                         with open(json_file, 'w') as f:
                             f.write(show_result['stdout'])

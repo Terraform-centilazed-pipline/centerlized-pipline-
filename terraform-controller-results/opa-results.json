@@ -1,0 +1,88 @@
+{
+  "summary": {
+    "total_plans": 1,
+    "plans_validated": 1,
+    "successful_validations": 1,
+    "failed_validations": 0,
+    "total_violations": 2,
+    "violations_by_severity": {
+      "critical": 2,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "critical_violations": 2,
+    "high_violations": 0,
+    "medium_violations": 0,
+    "low_violations": 0,
+    "services_detected": [
+      "S3"
+    ],
+    "validation_status": "failed"
+  },
+  "violations": [
+    {
+      "bucket": "test-4-poc-1",
+      "debug_has_encryption_enforcement": true,
+      "debug_has_principal_restriction": true,
+      "debug_has_vpc_endpoint_restriction": true,
+      "debug_statement_count": 3,
+      "message": "SECURITY VIOLATION: Bucket test-4-poc-1 policy does not follow mandatory golden template",
+      "policy": "terraform.s3.golden_template_violation",
+      "remediation": "Policy must have exactly 3 Deny statements: Principal restriction, VPC endpoint restriction, and encryption enforcement",
+      "resource": "module.s3[0].aws_s3_bucket_policy.bucket_policies[\"test-4-poc-1\"]",
+      "security_risk": "Non-compliant policies may allow unauthorized access or unencrypted data",
+      "severity": "critical",
+      "template_reference": "Use golden template from /templates/s3-bucket-policy.json",
+      "source_plan": "arj-wkld-a-prd-test-4-poc-1.json"
+    },
+    {
+      "message": "S3 bucket must use KMS encryption",
+      "policy": "terraform.s3.encryption_not_kms",
+      "remediation": "Set sse_algorithm to 'aws:kms' and provide kms_master_key_id",
+      "resource": "module.s3[0].aws_s3_bucket_server_side_encryption_configuration.encryption[\"test-4-poc-1\"]",
+      "security_risk": "Unencrypted or AES256 encrypted buckets are not compliant",
+      "severity": "critical",
+      "source_plan": "arj-wkld-a-prd-test-4-poc-1.json"
+    }
+  ],
+  "plan_results": [
+    {
+      "file_name": "arj-wkld-a-prd-test-4-poc-1.json",
+      "success": true,
+      "total_violations": 2,
+      "violations_by_severity": {
+        "critical": 2,
+        "high": 0,
+        "medium": 0,
+        "low": 0
+      },
+      "violations": [
+        {
+          "bucket": "test-4-poc-1",
+          "debug_has_encryption_enforcement": true,
+          "debug_has_principal_restriction": true,
+          "debug_has_vpc_endpoint_restriction": true,
+          "debug_statement_count": 3,
+          "message": "SECURITY VIOLATION: Bucket test-4-poc-1 policy does not follow mandatory golden template",
+          "policy": "terraform.s3.golden_template_violation",
+          "remediation": "Policy must have exactly 3 Deny statements: Principal restriction, VPC endpoint restriction, and encryption enforcement",
+          "resource": "module.s3[0].aws_s3_bucket_policy.bucket_policies[\"test-4-poc-1\"]",
+          "security_risk": "Non-compliant policies may allow unauthorized access or unencrypted data",
+          "severity": "critical",
+          "template_reference": "Use golden template from /templates/s3-bucket-policy.json",
+          "source_plan": "arj-wkld-a-prd-test-4-poc-1.json"
+        },
+        {
+          "message": "S3 bucket must use KMS encryption",
+          "policy": "terraform.s3.encryption_not_kms",
+          "remediation": "Set sse_algorithm to 'aws:kms' and provide kms_master_key_id",
+          "resource": "module.s3[0].aws_s3_bucket_server_side_encryption_configuration.encryption[\"test-4-poc-1\"]",
+          "security_risk": "Unencrypted or AES256 encrypted buckets are not compliant",
+          "severity": "critical",
+          "source_plan": "arj-wkld-a-prd-test-4-poc-1.json"
+        }
+      ]
+    }
+  ]
+}
