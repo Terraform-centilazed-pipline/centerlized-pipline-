@@ -188,14 +188,25 @@ jobs:
         working-directory: source-repo
         env:
           TERRAFORM_DIR: ../controller
+          CHANGED_FILES_JSON: ${{ toJSON(github.event.client_payload.changed_files) }}
         run: |
           echo "🔍 Running discovery for apply mode..."
-          echo "Apply mode - using changed files: ${{ github.event.client_payload.changed_files || github.event.client_payload.files }}"
-          # For apply mode, get changed files from the merge commit
-          python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
-            --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
-            --output-summary deployments.json \
-            --debug
+          
+          # Convert JSON array to space-separated string
+          if [ -n "$CHANGED_FILES_JSON" ] && [ "$CHANGED_FILES_JSON" != "null" ]; then
+            CHANGED_FILES=$(echo "$CHANGED_FILES_JSON" | jq -r '.[]' | tr '\n' ' ')
+            echo "Apply mode - changed files: $CHANGED_FILES"
+            
+            python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
+              --changed-files "$CHANGED_FILES" \
+              --output-summary deployments.json \
+              --debug
+          else
+            echo "Apply mode - no changed files provided, discovering all deployments"
+            python3 ../controller/scripts/terraform-deployment-orchestrator.py discover \
+              --output-summary deployments.json \
+              --debug
+          fi
           
           total=$(jq -r '.total_deployments // 0' deployments.json)
           echo "total=$total" >> $GITHUB_OUTPUT
@@ -1306,16 +1317,32 @@ jobs:
         working-directory: source-repo
         env:
           TERRAFORM_DIR: ../controller
+          CHANGED_FILES_JSON: ${{ toJSON(github.event.client_payload.changed_files) }}
         run: |
           echo "🚀 Running terraform apply for deployments..."
           echo "🔧 Terraform directory: $TERRAFORM_DIR"
           
+          # Convert JSON array to space-separated string
+          if [ -n "$CHANGED_FILES_JSON" ] && [ "$CHANGED_FILES_JSON" != "null" ]; then
+            CHANGED_FILES=$(echo "$CHANGED_FILES_JSON" | jq -r '.[]' | tr '\n' ' ')
+            echo "Changed files for apply: $CHANGED_FILES"
+          else
+            CHANGED_FILES=""
+            echo "No changed files provided, will apply all deployments"
+          fi
+          
           # Use the deployment orchestrator to run applies
           set +e  # Don't exit on error - we want to show results even if some applies fail
-          python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py apply \
-            --changed-files "${{ github.event.client_payload.changed_files || github.event.client_payload.files }}" \
-            --output-summary apply-results.json \
-            --debug
+          if [ -n "$CHANGED_FILES" ]; then
+            python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py apply \
+              --changed-files "$CHANGED_FILES" \
+              --output-summary apply-results.json \
+              --debug
+          else
+            python3 ../controller/scripts/terraform-deployment-orchestrator-enhanced.py apply \
+              --output-summary apply-results.json \
+              --debug
+          fi
           
           apply_exit_code=$?
           set -e
