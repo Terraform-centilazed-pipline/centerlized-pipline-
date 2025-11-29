@@ -809,119 +809,13 @@ jobs:
                         comment += `</table>\n\n`;
                       }
                       
-                      // Extract and parse DETAILED resource information
-                      const lines = output.split('\n');
-                      const resourceChanges = [];
-                      let currentResource = null;
-                      let inResourceBlock = false;
-                      
-                      for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
-                        
-                        // Detect resource operations
-                        if (line.match(/^\s*#\s+module\./)) {
-                          if (currentResource) resourceChanges.push(currentResource);
-                          
-                          const resourceMatch = line.match(/^\s*#\s+(module\.[^\s]+)/);
-                          if (resourceMatch) {
-                            currentResource = {
-                              name: resourceMatch[1],
-                              action: line.includes('will be created') ? 'create' :
-                                     line.includes('will be destroyed') ? 'destroy' :
-                                     line.includes('must be replaced') ? 'replace' :
-                                     line.includes('will be updated') ? 'update' : 'modify',
-                              attributes: []
-                            };
-                            inResourceBlock = true;
-                          }
-                        }
-                        
-                        // Capture attribute changes
-                        if (inResourceBlock && currentResource) {
-                          // Detect additions (+)
-                          if (line.match(/^\s*\+\s+/)) {
-                            const attrMatch = line.match(/^\s*\+\s+([^\s=]+)\s*=\s*(.+)/);
-                            if (attrMatch) {
-                              currentResource.attributes.push({
-                                type: 'add',
-                                name: attrMatch[1],
-                                value: attrMatch[2].replace(/^"(.*)"$/, '$1')
-                              });
-                            }
-                          }
-                          // Detect updates (~)
-                          else if (line.match(/^\s*~\s+/)) {
-                            const attrMatch = line.match(/^\s*~\s+([^\s=]+)\s*=\s*"?([^"]+)"?\s*->\s*"?([^"]+)"?/);
-                            if (attrMatch) {
-                              currentResource.attributes.push({
-                                type: 'update',
-                                name: attrMatch[1],
-                                oldValue: attrMatch[2],
-                                newValue: attrMatch[3]
-                              });
-                            }
-                          }
-                          // Detect deletions (-)
-                          else if (line.match(/^\s*-\s+/)) {
-                            const attrMatch = line.match(/^\s*-\s+([^\s=]+)\s*=\s*(.+)/);
-                            if (attrMatch) {
-                              currentResource.attributes.push({
-                                type: 'delete',
-                                name: attrMatch[1],
-                                value: attrMatch[2].replace(/^"(.*)"$/, '$1')
-                              });
-                            }
-                          }
-                          
-                          // End of resource block
-                          if (line.match(/^\s*}\s*$/) && !line.includes('->')) {
-                            inResourceBlock = false;
-                          }
-                        }
+                      // Show full terraform plan output
+                      comment += `<details>\n<summary>📋 <b>Terraform Plan Output</b></summary>\n\n`;
+                      comment += `\`\`\`hcl\n${output.substring(0, 30000)}\n\`\`\`\n`;
+                      if (output.length > 30000) {
+                        comment += `\n... (output truncated, see workflow logs for full plan)\n`;
                       }
-                      if (currentResource) resourceChanges.push(currentResource);
-                      
-                      // Display DETAILED resource changes
-                      if (resourceChanges.length > 0) {
-                        comment += `<details>\n<summary>🔍 <b>Detailed Resource Analysis</b> (${resourceChanges.length} resources with ${resourceChanges.reduce((sum, r) => sum + r.attributes.length, 0)} attribute changes)</summary>\n\n`;
-                        
-                        resourceChanges.slice(0, 15).forEach((resource, idx) => {
-                          const actionIcon = resource.action === 'create' ? '🟢 ➕' :
-                                           resource.action === 'destroy' ? '🔴 🗑️' :
-                                           resource.action === 'replace' ? '🟠 🔄' :
-                                           '🟡 📝';
-                          const actionText = resource.action.toUpperCase();
-                          
-                          comment += `\n**${idx + 1}. ${actionIcon} ${actionText}** \`${resource.name}\`\n\n`;
-                          
-                          if (resource.attributes.length > 0) {
-                            comment += `<table>\n`;
-                            comment += `<tr><th>Action</th><th>Attribute</th><th>Change Details</th></tr>\n`;
-                            
-                            resource.attributes.slice(0, 10).forEach(attr => {
-                              if (attr.type === 'add') {
-                                comment += `<tr><td>🟢 ➕</td><td><code>${attr.name}</code></td><td><code>${attr.value}</code></td></tr>\n`;
-                              } else if (attr.type === 'update') {
-                                comment += `<tr><td>🟡 📝</td><td><code>${attr.name}</code></td><td><code>${attr.oldValue}</code> → <code>${attr.newValue}</code></td></tr>\n`;
-                              } else if (attr.type === 'delete') {
-                                comment += `<tr><td>🔴 ➖</td><td><code>${attr.name}</code></td><td><s><code>${attr.value}</code></s></td></tr>\n`;
-                              }
-                            });
-                            
-                            if (resource.attributes.length > 10) {
-                              comment += `<tr><td colspan="3"><i>... and ${resource.attributes.length - 10} more attribute(s)</i></td></tr>\n`;
-                            }
-                            
-                            comment += `</table>\n`;
-                          }
-                        });
-                        
-                        if (resourceChanges.length > 15) {
-                          comment += `\n**📋 Additional Resources**: ${resourceChanges.length - 15} more resource(s) affected (see full plan output for details)\n`;
-                        }
-                        
-                        comment += `\n</details>\n\n`;
-                      }
+                      comment += `\n</details>\n\n`;
                     } else if (!result.has_changes) {
                       comment += `\n✨ **No changes detected** - Infrastructure matches desired state perfectly!\n\n`;
                       comment += `> 💚 All resources are up-to-date. No action required.\n\n`;
