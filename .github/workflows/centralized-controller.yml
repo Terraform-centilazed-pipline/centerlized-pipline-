@@ -6,7 +6,7 @@
 # Uses centralized main.tf, scripts, policies - dev repos just trigger it
 # =============================================================================
 
-name: Centralized Controller
+name: 🎯 [Controller] Terraform Orchestrator
 
 on:
   repository_dispatch:
@@ -24,7 +24,7 @@ env:
 
 jobs:
   terraform-controller:
-    name: 🎯 Terraform Controller
+    name: 🚀 ${{ github.event.client_payload.source_repo }} → ${{ github.event.client_payload.action }} (PR#${{ github.event.client_payload.pr_number }})
     runs-on: ubuntu-latest
     steps:
       - name: 📋 Event Details
