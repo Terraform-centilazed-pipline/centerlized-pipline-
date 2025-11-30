@@ -6,7 +6,7 @@
 # Uses centralized main.tf, scripts, policies - dev repos just trigger it
 # =============================================================================
 
-name: 🎯 [Controller] ${{ github.event.client_payload.source_repo }} → ${{ github.event.client_payload.action }} → PR#${{ github.event.client_payload.pr_number }} ${{ github.event.client_payload.pr_title }}
+name: 🎯 Centralized Terraform Controller
 
 on:
   repository_dispatch:
