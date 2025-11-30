@@ -8,6 +8,8 @@
 
 name: 🎯 Centralized Terraform Controller
 
+run-name: "[${{ github.event.client_payload.source_repo }}] ${{ github.event.client_payload.action }} → PR#${{ github.event.client_payload.pr_number }}: ${{ github.event.client_payload.pr_title }}"
+
 on:
   repository_dispatch:
     types: [terraform_pr, terraform_apply]
