@@ -29,30 +29,44 @@ jobs:
     steps:
       - name: 📋 Event Details
         run: |
-          echo "🔔 Repository Dispatch Event Received"
-          echo "Source Repo: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}"
-          echo "PR Number: ${{ github.event.client_payload.pr_number }}"
-          echo "Action: ${{ github.event.client_payload.action }}"
-          echo "Trigger: ${{ github.event.client_payload.trigger }}"
+          echo "════════════════════════════════════════════════════════════════"
+          echo "🎯 CENTRALIZED CONTROLLER RECEIVED DISPATCH EVENT"
+          echo "════════════════════════════════════════════════════════════════"
+          echo "📦 Source Repo: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}"
+          echo "🔍 PR #${{ github.event.client_payload.pr_number }}: ${{ github.event.client_payload.pr_title }}"
+          echo "🎯 Action: ${{ github.event.client_payload.action }}"
+          echo "🔔 Trigger: ${{ github.event.client_payload.trigger }}"
+          echo "🌿 Branch: ${{ github.event.client_payload.pr_head_ref }}"
+          echo "📝 Commit: ${{ github.event.client_payload.pr_head_sha }}"
           
           if [[ "${{ github.event.client_payload.action }}" == "apply" ]]; then
-            echo "🚀 APPLY MODE - Running terraform apply"
-            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
-            echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
-            echo "Merged SHA: ${{ github.event.client_payload.merge_commit_sha }}"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "🚀 MODE: TERRAFORM APPLY"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "👤 Merged by: ${{ github.event.client_payload.merged_by }}"
+            echo "🔀 Merge SHA: ${{ github.event.client_payload.merge_sha }}"
+            echo "🎯 Target Branch: ${{ github.event.client_payload.base_ref }}"
           elif [[ "${{ github.event.client_payload.action }}" == "validate" ]]; then
-            echo "🔍 VALIDATE MODE - Running OPA validation only"
-            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
-            echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "🔍 MODE: OPA VALIDATION"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "👤 PR Author: ${{ github.event.client_payload.pr_author }}"
           elif [[ "${{ github.event.client_payload.action }}" == "merge" ]]; then
-            echo "✅ MERGE MODE - Checking OPA status and merging if approved"
-            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
-            echo "Approver: ${{ github.event.client_payload.approver }}"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "✅ MODE: PR MERGE CHECK"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "✅ Approved by: @${{ github.event.client_payload.approver }}"
           else
-            echo "🔍 DEFAULT MODE - Running validation and waiting for approval"
-            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
-            echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
+            echo "════════════════════════════════════════════════════════════════"
+            echo "🔍 DEFAULT MODE - Validation & Approval Wait"
+            echo "════════════════════════════════════════════════════════════════"
           fi
+          
+          echo ""
+          echo "📄 Changed Files:"
+          echo "${{ join(github.event.client_payload.changed_files, '\n') }}"
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
 
       - name: Generate GitHub App Token
         id: app-token
