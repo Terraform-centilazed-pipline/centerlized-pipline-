@@ -1,0 +1,23 @@
+# Special Approvers Configuration
+# These users can override OPA failures with proper justification
+
+special_approvers:
+  - pragadeeswarpa
+  # Add more special approvers here:
+  # - admin-user
+  # - security-team-lead
+  # - devops-lead
+
+# How special approval works:
+# 1. PR must have OPA failure
+# 2. Special approver must approve the PR
+# 3. Special approver must comment with "OVERRIDE" keyword
+# 4. Comment must include justification and risk assessment
+#
+# Example override comment:
+# ```
+# OVERRIDE: Emergency production fix required
+# Risk: Low - temporary workaround for critical bug
+# Timeline: Proper fix planned for Sprint 24
+# Reviewed-by: Security team
+# ```

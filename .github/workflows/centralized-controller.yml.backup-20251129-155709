@@ -33,23 +33,13 @@ jobs:
           echo "Source Repo: ${{ github.event.client_payload.source_owner }}/${{ github.event.client_payload.source_repo }}"
           echo "PR Number: ${{ github.event.client_payload.pr_number }}"
           echo "Action: ${{ github.event.client_payload.action }}"
-          echo "Trigger: ${{ github.event.client_payload.trigger }}"
-          
           if [[ "${{ github.event.client_payload.action }}" == "apply" ]]; then
             echo "🚀 APPLY MODE - Running terraform apply"
             echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
             echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
             echo "Merged SHA: ${{ github.event.client_payload.merge_commit_sha }}"
-          elif [[ "${{ github.event.client_payload.action }}" == "validate" ]]; then
-            echo "🔍 VALIDATE MODE - Running OPA validation only"
-            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
-            echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
-          elif [[ "${{ github.event.client_payload.action }}" == "merge" ]]; then
-            echo "✅ MERGE MODE - Checking OPA status and merging if approved"
-            echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
-            echo "Approver: ${{ github.event.client_payload.approver }}"
           else
-            echo "🔍 DEFAULT MODE - Running validation and waiting for approval"
+            echo "🔍 PLAN MODE - Running terraform plan and validation"
             echo "PR Head: ${{ github.event.client_payload.pr_head_ref }}"
             echo "PR SHA: ${{ github.event.client_payload.pr_head_sha }}"
           fi
@@ -963,53 +953,255 @@ jobs:
               issue_number: ${{ github.event.client_payload.pr_number }},
               body: comment
             });
+
+      # ===== STEP 5: AUTO-MERGE OR CLOSE PR =====
+      - name: 🔀 Handle PR - Auto-merge if OPA Passed
+        if: steps.opa.outputs.validation_status != ''
+        id: merge
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const validation = '${{ steps.opa.outputs.validation_status }}';
+            const owner = '${{ github.event.client_payload.source_owner }}';
+            const repo = '${{ github.event.client_payload.source_repo }}';
+            const pr_number = ${{ github.event.client_payload.pr_number }};
             
-            // Add labels based on OPA status
             if (validation === 'passed') {
-              await github.rest.issues.addLabels({
-                owner: '${{ github.event.client_payload.source_owner }}',
-                repo: '${{ github.event.client_payload.source_repo }}',
-                issue_number: ${{ github.event.client_payload.pr_number }},
-                labels: ['opa-passed', 'ready-for-review']
-              });
-              console.log('✅ Added labels: opa-passed, ready-for-review');
+              console.log('✅ OPA passed - auto-merging PR');
+              
+              try {
+                // Get PR details for dynamic commit message
+                const { data: prData } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: pr_number
+                });
+                
+                // Get changed files from payload
+                const changedFiles = ${{ toJSON(github.event.client_payload.changed_files) }} || [];
+                const fileList = changedFiles.slice(0, 10).map(f => `  - ${f}`).join('\n');
+                const moreFiles = changedFiles.length > 10 ? `\n  ... and ${changedFiles.length - 10} more files` : '';
+                
+                // Build dynamic commit message with full audit trail
+                const commitTitle = `[Terraform] ${prData.title}`;
+                const commitMessage = `Automatically merged after successful OPA validation
+
+PR: #${pr_number} - ${prData.title}
+Author: @${prData.user.login}
+Branch: ${prData.head.ref} → ${prData.base.ref}
+Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+📁 Changed Files (${changedFiles.length}):
+${fileList}${moreFiles}
+
+✅ OPA Validation: PASSED
+🔒 Security Policies: Compliant
+🤖 Auto-merged by Centralized Controller
+
+Original PR: ${prData.html_url}`;
+                
+                const { data: mergeResult } = await github.rest.pulls.merge({
+                  owner,
+                  repo,
+                  pull_number: pr_number,
+                  merge_method: 'squash',
+                  commit_title: commitTitle,
+                  commit_message: commitMessage
+                });
+                
+                console.log('✅ PR merged successfully');
+                console.log('Merge SHA:', mergeResult.sha);
+                
+                // Set output for triggering apply job
+                core.setOutput('merged', 'true');
+                core.setOutput('merge_sha', mergeResult.sha);
+                
+                // Get PR details for notifications
+                const { data: prData } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: pr_number
+                });
+                
+                // Add success comment with team notifications
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr_number,
+                  body: `✅ **PR Auto-Approved & Merged!**\n\n` +
+                        `🛡️ OPA validation passed - all security policies compliant\n` +
+                        `🎯 Services validated: ${{ steps.opa.outputs.services_detected || 'All services' }}\n` +
+                        `🔀 Changes have been merged to \`main\`\n` +
+                        `🚀 Terraform apply will begin automatically...\n\n` +
+                        `**Merge SHA**: \`${mergeResult.sha}\`\n\n` +
+                        `🔔 **Team Notification**: @${prData.user.login} - Your changes have been automatically approved and deployed!`
+                });
+                
+                // Send additional success notification to stakeholders
+                try {
+                  const { data: reviews } = await github.rest.pulls.listReviews({
+                    owner,
+                    repo,
+                    pull_number: pr_number
+                  });
+                  
+                  const reviewers = [...new Set(reviews.map(review => review.user.login))];
+                  const assignees = prData.assignees.map(assignee => assignee.login);
+                  const allNotifyUsers = [...new Set([prData.user.login, ...reviewers, ...assignees])];
+                  
+                  if (allNotifyUsers.length > 1) { // Only send if there are multiple stakeholders
+                    const mentions = allNotifyUsers.map(user => `@${user}`).join(' ');
+                    await github.rest.issues.createComment({
+                      owner,
+                      repo,
+                      issue_number: pr_number,
+                      body: `🎉 **Deployment Success Notification**\n\n` +
+                            `${mentions}\n\n` +
+                            `✅ Security policies passed\n` +
+                            `🚀 Changes automatically merged and deployment initiated\n` +
+                            `📊 Validation results: ${{ steps.opa.outputs.total_violations || 0 }} violations found\n\n` +
+                            `*Automated notification from Centralized Terraform Controller*`
+                    });
+                  }
+                } catch (error) {
+                  console.log('⚠️ Could not send team notifications:', error.message);
+                }
+                
+              } catch (error) {
+                console.log('❌ Could not merge:', error.message);
+                core.setOutput('merged', 'false');
+                
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr_number,
+                  body: `⚠️ **Auto-merge Failed**\n\nOPA validation passed, but automatic merge failed.\n\nError: ${error.message}\n\nPlease merge manually.`
+                });
+              }
             } else if (validation === 'failed') {
-              await github.rest.issues.addLabels({
-                owner: '${{ github.event.client_payload.source_owner }}',
-                repo: '${{ github.event.client_payload.source_repo }}',
-                issue_number: ${{ github.event.client_payload.pr_number }},
-                labels: ['opa-failed', 'needs-fixes']
+              console.log('❌ OPA failed - closing PR');
+              
+              core.setOutput('merged', 'false');
+              
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pr_number,
+                state: 'closed'
               });
-              console.log('❌ Added labels: opa-failed, needs-fixes');
+              
+              // Try to include detailed violation information
+              let detailedInfo = '';
+              try {
+                const fs = require('fs');
+                const detailedResults = fs.readFileSync('source-repo/opa-detailed-results.md', 'utf8');
+                detailedInfo = `\n<details>\n<summary>📋 Click to view detailed violation information</summary>\n\n${detailedResults}\n</details>\n\n`;
+              } catch (e) {
+                detailedInfo = `\n💡 **Note**: Check the workflow logs for detailed violation information.\n\n`;
+              }
+              
+              // Get PR details for notifications
+              const { data: prData } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pr_number
+              });
+              
+              // Create main comment with violation details
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr_number,
+                body: `❌ **PR Closed: Policy Violations**\n\n` +
+                      `🛡️ OPA validation failed with **${{ steps.opa.outputs.total_violations }} violations**\n\n` +
+                      `**Severity Breakdown**:\n` +
+                      `- 🔴 Critical: ${{ steps.opa.outputs.critical_violations }}\n` +
+                      `- 🟠 High: ${{ steps.opa.outputs.high_violations }}\n` +
+                      `- 🟡 Medium: ${{ steps.opa.outputs.medium_violations }}\n` +
+                      `- 🟢 Low: ${{ steps.opa.outputs.low_violations }}\n\n` +
+                      `**Services Validated**: ${{ steps.opa.outputs.services_detected || 'All' }}\n` +
+                      detailedInfo +
+                      `This PR has been automatically closed due to security policy violations.\n\n` +
+                      `**Required Actions**:\n` +
+                      `1. Review the detailed violation information above\n` +
+                      `2. Fix all policy violations in your Terraform configuration\n` +
+                      `3. Ensure all required tags are present (especially \`ManagedBy\`)\n` +
+                      `4. Create a new PR with corrected changes\n\n` +
+                      `---\n` +
+                      `*Security policies must pass before changes can be merged.*\n\n` +
+                      `🔔 **Notifications sent to**: @${prData.user.login}, reviewers, and watchers`
+              });
+              
+              // Send additional notifications to key stakeholders
+              try {
+                // Get PR reviewers and assignees
+                const { data: reviews } = await github.rest.pulls.listReviews({
+                  owner,
+                  repo,
+                  pull_number: pr_number
+                });
+                
+                const reviewers = [...new Set(reviews.map(review => review.user.login))];
+                const assignees = prData.assignees.map(assignee => assignee.login);
+                const allNotifyUsers = [...new Set([prData.user.login, ...reviewers, ...assignees])];
+                
+                // Create targeted notification comment
+                if (allNotifyUsers.length > 0) {
+                  const mentions = allNotifyUsers.map(user => `@${user}`).join(' ');
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pr_number,
+                    body: `🚨 **Security Policy Violation Alert**\n\n` +
+                          `${mentions}\n\n` +
+                          `This PR has been closed due to Terraform security policy violations. ` +
+                          `Please review the violations above and create a new PR with the necessary fixes.\n\n` +
+                          `**Critical Actions Required**:\n` +
+                          `- [ ] Review policy violations\n` +
+                          `- [ ] Fix missing or incorrect tags\n` +
+                          `- [ ] Validate changes locally\n` +
+                          `- [ ] Create new PR with fixes\n\n` +
+                          `*This is an automated security notification from the Centralized Terraform Controller.*`
+                  });
+                }
+              } catch (error) {
+                console.log('⚠️ Could not send targeted notifications:', error.message);
+              }
+              
+              console.log('❌ PR closed due to policy violations');
+              
+              // Cleanup feature branch after policy violation closure
+              try {
+                const branchName = prData.head.ref;
+                const protectedBranches = ['main', 'master', 'develop', 'development', 'staging', 'production'];
+                
+                if (!protectedBranches.includes(branchName)) {
+                  await github.rest.git.deleteRef({
+                    owner,
+                    repo,
+                    ref: `heads/${branchName}`
+                  });
+                  
+                  console.log(`✅ Deleted feature branch: ${branchName} after policy violation`);
+                  
+                  // Add cleanup notification
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pr_number,
+                    body: `🧹 **Branch Cleanup**: Feature branch \`${branchName}\` has been automatically deleted. ` +
+                          `Create a new branch when you're ready to submit fixes.`
+                  });
+                } else {
+                  console.log(`⚠️ Skipped deletion of protected branch: ${branchName}`);
+                }
+              } catch (cleanupError) {
+                console.log('⚠️ Could not cleanup feature branch:', cleanupError.message);
+              }
             }
 
-      # ===== STEP 5: SETUP PYTHON FOR PR MERGE SCRIPT =====
-      - name: 🐍 Setup Python
-        if: github.event.client_payload.action == 'merge' && steps.opa.outputs.validation_status != ''
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-          
-      - name: 📦 Install Python dependencies
-        if: github.event.client_payload.action == 'merge' && steps.opa.outputs.validation_status != ''
-        run: |
-          pip install -r scripts/requirements.txt
-          
-      # ===== STEP 6: HANDLE PR MERGE WITH PYTHON SCRIPT =====
-      - name: 🏷️ Check OPA Status and Merge PR
-        if: github.event.client_payload.action == 'merge'
-        id: merge
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          SOURCE_OWNER: ${{ github.event.client_payload.source_owner }}
-          SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
-          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
-          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          APPROVER: ${{ github.event.client_payload.approver }}
-        run: |
-          python scripts/handle_pr_merge.py
-
-      # ===== STEP 7: TRIGGER TERRAFORM APPLY (after successful merge) =====
+      # ===== STEP 6: TRIGGER TERRAFORM APPLY (after successful merge) =====
       - name: 🚀 Trigger Terraform Apply
         if: steps.merge.outputs.merged == 'true'
         uses: actions/github-script@v7
