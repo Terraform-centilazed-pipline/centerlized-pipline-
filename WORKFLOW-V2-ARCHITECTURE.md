@@ -9,15 +9,15 @@ graph TB
         B --> C[📝 PR Created automatically]
         C --> D[🔍 dispatch-validate triggered]
         
-        D --> |"📤 Dispatch Event<br/>repo: dev-deployment<br/>PR#: 73<br/>action: validate<br/>files: [tfvars]"| E
+        D --> |"📤 Dispatch Event<br/>repo: dev-deployment<br/>PR: 73<br/>action: validate<br/>files: tfvars"| E
         
         C --> F[👀 Reviewer approves PR]
         F --> G[✅ dispatch-merge triggered]
         
-        G --> |"📤 Dispatch Event<br/>repo: dev-deployment<br/>PR#: 73<br/>action: merge<br/>approver: username"| H
+        G --> |"📤 Dispatch Event<br/>repo: dev-deployment<br/>PR: 73<br/>action: merge<br/>approver: username"| H
         
         I[🔀 PR Merged to main] --> J[🚀 dispatch-apply triggered]
-        J --> |"📤 Dispatch Event<br/>repo: dev-deployment<br/>PR#: 73<br/>action: apply<br/>merge_sha: abc123"| K
+        J --> |"📤 Dispatch Event<br/>repo: dev-deployment<br/>PR: 73<br/>action: apply<br/>merge_sha: abc123"| K
     end
     
     subgraph CONTROLLER["🎯 centerlized-pipline- Repository"]
@@ -47,7 +47,7 @@ graph TB
         Y --> |Yes + OVERRIDE comment| AC[⚠️ Merge with Override<br/>Add opa-override label]
         Y --> |No| AD[🚫 Block merge<br/>Add requires-special-approval]
         
-        AA --> AE[✨ Commit Message:<br/>PR#73 by @user<br/>Approved by @reviewer<br/>Files: [list]<br/>OPA: passed<br/>Workflow: URL<br/>Timestamp: UTC]
+        AA --> AE[✨ Commit Message:<br/>PR#73 by @user<br/>Approved by @reviewer<br/>Files: tfvars list<br/>OPA: passed<br/>Workflow: URL<br/>Timestamp: UTC]
         
         K[🔔 Controller receives apply] --> AF{🔒 Security Gate}
         AF --> |Check labels| AG{Has opa-passed?}
