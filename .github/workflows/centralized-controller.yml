@@ -867,8 +867,9 @@ jobs:
                     comment += `<tr><td><b>🏗️ Services</b></td><td>${services}</td></tr>\n`;
                     comment += `<tr><td><b>🌍 Environment</b></td><td>${dep.environment || 'N/A'}</td></tr>\n`;
                     comment += `<tr><td><b>📁 Deployment Path</b></td><td><code>${dep.deployment_dir || 'N/A'}</code></td></tr>\n`;
-                    comment += `<tr><td><b>👤 Author</b></td><td>${'${{ github.event.client_payload.pr_author }}'}</td></tr>\n`;
-                    comment += `<tr><td><b>📝 Commit</b></td><td><code>${'${{ github.event.client_payload.pr_head_sha }}'.substring(0, 7)}</code></td></tr>\n`;
+                    comment += `<tr><td><b>👤 Commit Author</b></td><td>${'${{ github.event.client_payload.commit_author }}' || '${{ github.event.client_payload.pr_author }}'}</td></tr>\n`;
+                    comment += `<tr><td><b>📝 Commit SHA</b></td><td><code>${'${{ github.event.client_payload.pr_head_sha }}'.substring(0, 7)}</code></td></tr>\n`;
+                    comment += `<tr><td><b>💬 Commit Message</b></td><td>${'${{ github.event.client_payload.commit_message }}' || 'N/A'}</td></tr>\n`;
                     comment += `</table>\n\n`;
                     
                     // DEEP Parse terraform output for resource changes
