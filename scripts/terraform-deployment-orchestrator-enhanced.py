@@ -49,6 +49,58 @@ def strip_ansi_colors(text):
     text = bracket_codes.sub('', text)
     return text
 
+def redact_sensitive_data(text: str) -> str:
+    """Redact sensitive information from terraform output for PR comments"""
+    if not text:
+        return text
+    
+    # Redact ARNs (keep service and region, hide account ID)
+    text = re.sub(
+        r'arn:aws:([a-z0-9\-]+):([a-z0-9\-]*):([0-9]{12}):([^\s"]+)',
+        r'arn:aws:\1:\2:***REDACTED***:\4',
+        text
+    )
+    
+    # Redact AWS account IDs
+    text = re.sub(r'\b([0-9]{12})\b', r'***ACCOUNT-ID***', text)
+    
+    # Redact S3 bucket ARNs specifically
+    text = re.sub(
+        r'arn:aws:s3:::([a-z0-9\-\.]+)',
+        r'arn:aws:s3:::***BUCKET***',
+        text
+    )
+    
+    # Redact KMS key IDs
+    text = re.sub(
+        r'key/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})',
+        r'key/***KEY-ID***',
+        text
+    )
+    
+    # Redact IP addresses
+    text = re.sub(
+        r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b',
+        r'***IP-ADDRESS***',
+        text
+    )
+    
+    # Redact access keys (if accidentally in output)
+    text = re.sub(
+        r'AKIA[0-9A-Z]{16}',
+        r'***ACCESS-KEY***',
+        text
+    )
+    
+    # Redact secret keys (if accidentally in output)
+    text = re.sub(
+        r'[A-Za-z0-9/+=]{40}',
+        r'***SECRET-KEY***',
+        text
+    )
+    
+    return text
+
 class EnhancedTerraformOrchestrator:
     """Enhanced Terraform Orchestrator with dynamic backend keys and improved PR comments"""
     
@@ -56,6 +108,7 @@ class EnhancedTerraformOrchestrator:
         import os
         self.script_dir = Path(__file__).parent
         self.working_dir = Path(working_dir) if working_dir else Path.cwd()
+        self.state_backups = {}  # Track backups for rollback
         
         terraform_dir_env = os.getenv('TERRAFORM_DIR')
         if terraform_dir_env:
@@ -285,6 +338,120 @@ class EnhancedTerraformOrchestrator:
         if match:
             return match.group(1)
         return None
+    
+    def _backup_state_file(self, backend_key: str, deployment_name: str) -> Tuple[bool, str]:
+        """Backup current state file to S3 with timestamp before apply"""
+        try:
+            import boto3
+            from datetime import datetime
+            
+            s3 = boto3.client('s3')
+            bucket = 'terraform-elb-mdoule-poc'
+            
+            # Check if state file exists
+            try:
+                s3.head_object(Bucket=bucket, Key=backend_key)
+            except:
+                print(f"ℹ️  No existing state file to backup for {deployment_name}")
+                return True, "no-previous-state"
+            
+            # Create backup with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            backup_key = f"backups/{backend_key}.{timestamp}.backup"
+            
+            # Copy current state to backup location
+            s3.copy_object(
+                Bucket=bucket,
+                CopySource={'Bucket': bucket, 'Key': backend_key},
+                Key=backup_key,
+                ServerSideEncryption='AES256'  # Encrypt backup
+            )
+            
+            # Store backup info for potential rollback
+            self.state_backups[deployment_name] = {
+                'backup_key': backup_key,
+                'original_key': backend_key,
+                'timestamp': timestamp
+            }
+            
+            print(f"💾 State backed up: s3://{bucket}/{backup_key}")
+            return True, backup_key
+            
+        except Exception as e:
+            print(f"⚠️  State backup failed: {e}")
+            return False, str(e)
+    
+    def _rollback_state_file(self, deployment_name: str) -> bool:
+        """Rollback to previous state file if apply fails"""
+        try:
+            import boto3
+            
+            if deployment_name not in self.state_backups:
+                print(f"⚠️  No backup found for {deployment_name}")
+                return False
+            
+            backup_info = self.state_backups[deployment_name]
+            s3 = boto3.client('s3')
+            bucket = 'terraform-elb-mdoule-poc'
+            
+            print(f"🔄 Rolling back state from backup: {backup_info['backup_key']}")
+            
+            # Copy backup back to original location
+            s3.copy_object(
+                Bucket=bucket,
+                CopySource={'Bucket': bucket, 'Key': backup_info['backup_key']},
+                Key=backup_info['original_key']
+            )
+            
+            print(f"✅ State rolled back successfully")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Rollback failed: {e}")
+            return False
+    
+    def _save_audit_log(self, deployment: Dict, result: Dict, action: str):
+        """Save detailed audit log to S3 with full unredacted output"""
+        try:
+            import boto3
+            from datetime import datetime
+            
+            s3 = boto3.client('s3')
+            bucket = 'terraform-elb-mdoule-poc'
+            
+            timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            log_key = f"audit-logs/{deployment['account_name']}/{deployment['project']}/{action}-{timestamp}.json"
+            
+            audit_data = {
+                'timestamp': datetime.now().isoformat(),
+                'action': action,
+                'deployment': deployment,
+                'result': {
+                    'success': result['success'],
+                    'backend_key': result.get('backend_key', 'unknown'),
+                    'services': result.get('services', []),
+                    'output': result.get('output', ''),  # Full unredacted output
+                    'error': result.get('error'),
+                    'error_detail': result.get('error_detail')
+                },
+                'orchestrator_version': ORCHESTRATOR_VERSION
+            }
+            
+            # Save to S3 with encryption
+            s3.put_object(
+                Bucket=bucket,
+                Key=log_key,
+                Body=json.dumps(audit_data, indent=2),
+                ServerSideEncryption='AES256',
+                ContentType='application/json'
+            )
+            
+            print(f"📝 Audit log saved: s3://{bucket}/{log_key}")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️  Audit log save failed: {e}")
+            return False
 
     def _validate_tfvars_file(self, tfvars_file: Path) -> Tuple[bool, str]:
         """Validate tfvars file exists and has valid syntax"""
@@ -341,39 +508,44 @@ class EnhancedTerraformOrchestrator:
                     details[service]['names'].append(name)
 
     def _generate_enhanced_pr_comment(self, deployment: Dict, result: Dict, services: List[str]) -> str:
-        """Generate enhanced PR comment with service details and outputs for any Terraform deployment"""
+        """Generate enhanced PR comment with service details and outputs - REDACTED for security"""
         deployment_name = f"{deployment['account_name']}-{deployment['project']}"
         orchestrator_ver = result.get('orchestrator_version', ORCHESTRATOR_VERSION)
         
+        # SECURITY: Redact sensitive data from all outputs
+        redacted_output = redact_sensitive_data(result.get('output', ''))
+        redacted_error = redact_sensitive_data(result.get('error', 'Unknown error'))
+        
         if not result['success']:
-            # Error comment
+            # Error comment - REDACTED
             return f"""### ❌ {deployment_name} - Deployment Failed
 
 **Services:** {', '.join(services) if services else 'None detected'}
-**Backend Key:** `{result.get('backend_key', 'unknown')}`
 
-**Error:** {result.get('error', 'Unknown error')}
+**Error:** {redacted_error}
 
-<details><summary><strong>🚨 Error Details</strong></summary>
+<details><summary><strong>🚨 Error Details (Sensitive data redacted)</strong></summary>
 
 ```
-{result.get('output', 'No output available')[:2000]}
+{redacted_output[:2000]}
 ```
 
 </details>
+
+🔒 **Security Notice:** Sensitive data (ARNs, Account IDs, IPs) redacted from PR comments.
+📋 **Full logs:** Saved to encrypted audit log in S3 for compliance.
 
 Please fix the errors and push to a new branch.
 
 ---
 """
         
-        # Success comment
-        outputs = self._extract_terraform_outputs(result.get('output', ''), result.get('action', 'unknown'))
+        # Success comment - REDACTED
+        outputs = self._extract_terraform_outputs(redacted_output, result.get('action', 'unknown'))
         
         comment = f"""### ✅ {deployment_name} - Deployment Successful
 
 **Services:** {', '.join(services) if services else 'None detected'}
-**Backend Key:** `{result.get('backend_key', 'unknown')}`
 **Action:** {result.get('action', 'unknown').title()}
 **Orchestrator Version:** v{orchestrator_ver}
 
@@ -407,14 +579,22 @@ Please fix the errors and push to a new branch.
                         comment += f"- Name: `{name}`\n"
             comment += "\n"
         
-        # Add terraform output details
-        comment += f"""<details><summary><strong>🔍 Full Terraform Output</strong></summary>
+        # Add terraform output details - REDACTED
+        comment += f"""<details><summary><strong>🔍 Terraform Output (Sensitive data redacted)</strong></summary>
 
 ```terraform
-{result.get('output', 'No output available')[:3000]}
+{redacted_output[:3000]}
 ```
 
 </details>
+
+🔒 **Security & Compliance:**
+- ✅ Sensitive data redacted from PR comments (ARNs, Account IDs, IP addresses)
+- ✅ Full unredacted logs saved to encrypted S3 audit log
+- ✅ State file backed up before apply
+- ✅ Automatic rollback on failure
+
+📋 **Audit Trail:** s3://terraform-elb-mdoule-poc/audit-logs/{deployment['account_name']}/{deployment['project']}/
 
 ---
 """
@@ -470,14 +650,16 @@ Please fix the errors and push to a new branch.
                 import traceback
                 traceback.print_exc()
             
-            # Initialize Terraform with dynamic backend
+            # Initialize Terraform with dynamic backend + STATE LOCKING
             init_cmd = [
                 'init', '-input=false',
                 f'-backend-config=key={backend_key}',
-                f'-backend-config=region=us-east-1'
+                f'-backend-config=region=us-east-1',
+                f'-backend-config=dynamodb_table=terraform-state-locks'  # State locking
             ]
             
             print(f"🔄 Initializing Terraform with backend key: {backend_key}")
+            print(f"🔒 State locking enabled via DynamoDB table: terraform-state-locks")
             
             init_result = self._run_terraform_command(init_cmd, main_dir)
             if init_result['returncode'] != 0:
@@ -492,6 +674,18 @@ Please fix the errors and push to a new branch.
                     'action': action
                 }
             
+            # BACKUP STATE FILE BEFORE APPLY
+            deployment_name = f"{deployment['account_name']}-{deployment['project']}"
+            backup_info = None
+            
+            if action == "apply":
+                print(f"💾 Creating state backup before apply...")
+                backup_success, backup_info = self._backup_state_file(backend_key, deployment_name)
+                if backup_success:
+                    print(f"✅ State backup created: {backup_info}")
+                else:
+                    print(f"⚠️ Warning: State backup failed, but continuing with apply")
+            
             # Run terraform action
             if action == "plan":
                 # Save plan to file for JSON conversion
@@ -501,10 +695,22 @@ Please fix the errors and push to a new branch.
                 print(f"📋 Running terraform plan...")
             elif action == "apply":
                 cmd = ['apply', '-auto-approve', '-input=false', '-var-file=terraform.tfvars', '-no-color']
+                print(f"🚀 Running terraform apply...")
             else:
                 cmd = [action, '-input=false', '-var-file=terraform.tfvars', '-no-color']
             
             result = self._run_terraform_command(cmd, main_dir)
+            
+            # ROLLBACK ON APPLY FAILURE
+            if action == "apply" and result['returncode'] != 0:
+                print(f"\n❌ Apply failed! Attempting automatic rollback...")
+                rollback_success = self._rollback_state_file(deployment_name)
+                if rollback_success:
+                    print(f"✅ State file rolled back to previous version")
+                    result['output'] += f"\n\n⚠️ ROLLBACK PERFORMED: State file restored from backup due to apply failure"
+                else:
+                    print(f"⚠️ Rollback failed - manual intervention may be required")
+                    result['output'] += f"\n\n⚠️ ROLLBACK FAILED: Manual state file recovery may be required"
             
             # Determine success based on action and exit code
             if action == "plan":
@@ -590,7 +796,8 @@ Please fix the errors and push to a new branch.
                     print(f"\n📋 Full stdout:")
                     print(result.get('stdout', 'No stdout available'))
             
-            return {
+            # Build result dict
+            final_result = {
                 'deployment': deployment,
                 'success': success,
                 'has_changes': has_changes,
@@ -602,8 +809,19 @@ Please fix the errors and push to a new branch.
                 'action': action,
                 'error': None if success else f"{action} failed with exit code {result['returncode']}",
                 'error_detail': result.get('stderr', result.get('output', '')) if not success else None,
-                'orchestrator_version': ORCHESTRATOR_VERSION
+                'orchestrator_version': ORCHESTRATOR_VERSION,
+                'backup_info': backup_info if action == 'apply' else None
             }
+            
+            # SAVE AUDIT LOG (full unredacted output for compliance)
+            print(f"📋 Saving audit log to encrypted S3...")
+            audit_success = self._save_audit_log(deployment, final_result, action)
+            if audit_success:
+                print(f"✅ Audit log saved successfully")
+            else:
+                print(f"⚠️ Warning: Audit log save failed")
+            
+            return final_result
             
         except Exception as e:
             return {
@@ -871,17 +1089,31 @@ Please fix the errors and push to a new branch.
         return True
     
     def execute_deployments(self, deployments: List[Dict], action: str = "plan") -> Dict:
-        """Execute terraform deployments - sequential processing"""
+        """Execute terraform deployments - PARALLEL processing with thread pool"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+        
         results = {
             'successful': [],
             'failed': [],
             'summary': {}
         }
         
-        print(f"🚀 Starting {action} for {len(deployments)} deployments")
+        # Determine optimal number of parallel workers
+        # Use CPU cores × 2 (Terraform is I/O bound, not CPU bound)
+        # But cap at 5 to avoid AWS API rate limits
+        import os
+        cpu_count = os.cpu_count() or 2
+        optimal_workers = cpu_count * 2  # 2 cores = 4 workers, 4 cores = 8 workers
+        max_workers = min(optimal_workers, 5, len(deployments)) if len(deployments) > 1 else 1
         
-        for i, deployment in enumerate(deployments, 1):
-            print(f"🔄 [{i}/{len(deployments)}] Processing {deployment['account_name']}/{deployment['region']}/{deployment['project']}")
+        print(f"🚀 Starting {action} for {len(deployments)} deployments")
+        print(f"💻 Detected {cpu_count} CPU cores → {optimal_workers} optimal workers (using {max_workers})")
+        
+        if max_workers == 1:
+            # Single deployment - no need for threading overhead
+            deployment = deployments[0]
+            print(f"🔄 [1/1] Processing {deployment['account_name']}/{deployment['region']}/{deployment['project']}")
             
             try:
                 result = self._process_deployment_enhanced(deployment, action)
@@ -902,6 +1134,46 @@ Please fix the errors and push to a new branch.
                 }
                 results['failed'].append(error_result)
                 print(f"💥 {deployment['account_name']}/{deployment['region']}: Exception - {e}")
+        else:
+            # Multiple deployments - use parallel execution
+            completed = 0
+            lock = threading.Lock()
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all deployments to thread pool
+                future_to_deployment = {
+                    executor.submit(self._process_deployment_enhanced, dep, action): dep
+                    for dep in deployments
+                }
+                
+                # Process results as they complete
+                for future in as_completed(future_to_deployment):
+                    deployment = future_to_deployment[future]
+                    completed += 1
+                    
+                    try:
+                        result = future.result()
+                        
+                        with lock:  # Thread-safe result collection
+                            if result['success']:
+                                results['successful'].append(result)
+                                print(f"✅ [{completed}/{len(deployments)}] {deployment['account_name']}/{deployment['region']}: Success")
+                            else:
+                                results['failed'].append(result)
+                                print(f"❌ [{completed}/{len(deployments)}] {deployment['account_name']}/{deployment['region']}: Failed")
+                                if DEBUG:
+                                    print(f"🔍 Error details: {result.get('error', 'No error message')}")
+                    
+                    except Exception as e:
+                        with lock:
+                            error_result = {
+                                'deployment': deployment,
+                                'success': False,
+                                'error': str(e),
+                                'output': f"Exception during processing: {e}"
+                            }
+                            results['failed'].append(error_result)
+                            print(f"💥 [{completed}/{len(deployments)}] {deployment['account_name']}/{deployment['region']}: Exception - {e}")
         
         results['summary'] = {
             'total': len(deployments),

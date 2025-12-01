@@ -139,13 +139,67 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
+      # ===== CENTRALIZED CACHE (Shared across ALL workflow runs) =====
+      - name: 📦 Cache Terraform Plugins
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+          key: terraform-plugins-${{ env.TERRAFORM_VERSION }}-${{ hashFiles('controller/**/.terraform.lock.hcl', 'source-repo/**/.terraform.lock.hcl') }}
+          restore-keys: |
+            terraform-plugins-${{ env.TERRAFORM_VERSION }}-
+            terraform-plugins-
+
+      - name: 📦 Cache Terraform Modules (tf-module repo)
+        uses: actions/cache@v4
+        with:
+          path: |
+            **/.terraform/modules
+            **/.terraform/providers
+          key: terraform-modules-${{ hashFiles('controller/main.tf', 'controller/providers.tf', 'controller/versions.tf') }}-v1
+          restore-keys: |
+            terraform-modules-${{ hashFiles('controller/main.tf', 'controller/providers.tf') }}-
+            terraform-modules-
+
+      - name: 📦 Cache OPA Policies
+        uses: actions/cache@v4
+        with:
+          path: |
+            opa-policies
+          key: opa-policies-${{ hashFiles('opa-policies/**/*.rego') }}-v1
+          restore-keys: |
+            opa-policies-
+
+      - name: 📦 Cache OPA Binary
+        id: cache-opa
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/opa
+          key: opa-binary-${{ env.OPA_VERSION }}
+          restore-keys: |
+            opa-binary-
+
       - name: 🔧 Setup OPA
+        if: steps.cache-opa.outputs.cache-hit != 'true'
         run: |
           echo "📦 Installing OPA ${{ env.OPA_VERSION }}..."
           curl -L -o opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
           chmod +x opa
           sudo mv opa /usr/local/bin/
           opa version
+
+      - name: ✅ Verify OPA (from cache)
+        if: steps.cache-opa.outputs.cache-hit == 'true'
+        run: |
+          echo "✅ OPA restored from cache"
+          opa version
+
+      - name: 🔧 Setup Terraform Plugin Cache Directory
+        run: |
+          echo "📁 Creating Terraform plugin cache directory..."
+          mkdir -p $HOME/.terraform.d/plugin-cache
+          echo 'plugin_cache_dir = "$HOME/.terraform.d/plugin-cache"' > $HOME/.terraformrc
+          echo "✅ Plugin cache enabled at $HOME/.terraform.d/plugin-cache"
 
       - name: Configure Git Authentication for Terraform Modules
         run: |
