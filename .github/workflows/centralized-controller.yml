@@ -854,21 +854,21 @@ jobs:
                 const results = JSON.parse(planResults);
                 
                 if (results.successful && results.successful.length > 0) {
-                  comment += `### ✅ Successful Deployments\n\n`;
+                  comment += `### ✅ Plan Validation Results\n\n`;
                   
                   results.successful.forEach(result => {
                     const dep = result.deployment;
-                    const backendKey = result.backend_key || 'N/A';
                     const services = result.services ? result.services.join(', ') : 'N/A';
                     
                     comment += `<table>\n`;
                     comment += `<tr><td colspan="2">\n\n`;
                     comment += `#### 🎯 ${dep.account_name} / ${dep.region} / ${dep.project}\n\n`;
                     comment += `</td></tr>\n`;
-                    comment += `<tr><td><b>🔑 Backend Key</b></td><td><code>${backendKey}</code></td></tr>\n`;
                     comment += `<tr><td><b>🏗️ Services</b></td><td>${services}</td></tr>\n`;
                     comment += `<tr><td><b>🌍 Environment</b></td><td>${dep.environment || 'N/A'}</td></tr>\n`;
                     comment += `<tr><td><b>📁 Deployment Path</b></td><td><code>${dep.deployment_dir || 'N/A'}</code></td></tr>\n`;
+                    comment += `<tr><td><b>👤 Author</b></td><td>${'${{ github.event.client_payload.pr_author }}'}</td></tr>\n`;
+                    comment += `<tr><td><b>📝 Commit</b></td><td><code>${'${{ github.event.client_payload.pr_head_sha }}'.substring(0, 7)}</code></td></tr>\n`;
                     comment += `</table>\n\n`;
                     
                     // DEEP Parse terraform output for resource changes
@@ -1002,10 +1002,11 @@ jobs:
             comment += `### 📚 Resources & Next Steps\n\n`;
             
             if (validation === 'passed') {
-              comment += `✅ **Your deployment is approved!**\n\n`;
+              comment += `✅ **Your plan is validated and approved!**\n\n`;
+              comment += `> 📋 **Note:** This is a **plan validation** - no resources have been deployed yet.\n\n`;
               comment += `**What happens next?**\n`;
               comment += `1. ✅ This PR will be **automatically merged**\n`;
-              comment += `2. 🚀 Terraform apply will execute automatically\n`;
+              comment += `2. 🚀 Terraform **apply** will execute to deploy resources\n`;
               comment += `3. 📧 You'll receive notifications about deployment progress\n\n`;
             } else if (validation === 'failed') {
               comment += `❌ **Action required to proceed:**\n\n`;
@@ -1016,12 +1017,9 @@ jobs:
               comment += `**Need help?** Check [OPA Policy Documentation](https://github.com/Terraform-centilazed-pipline/opa-poclies)\n\n`;
             }
             
-            comment += `<details>\n<summary>🔗 Useful Links</summary>\n\n`;
+            comment += `**🔗 Useful Links:**\n`;
             comment += `- 🤖 [View Workflow Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})\n`;
-            comment += `- 📋 [OPA Policy Repository](https://github.com/Terraform-centilazed-pipline/opa-poclies)\n`;
-            comment += `- 🏗️ [Terraform Modules](https://github.com/Terraform-centilazed-pipline/tf-module)\n`;
-            comment += `- 📖 [Deployment Guide](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/blob/main/README.md)\n`;
-            comment += `</details>\n\n`;
+            comment += `- 📖 [Deployment Guide](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/blob/main/README.md)\n\n`;
             
             comment += `---\n`;
             comment += `🤖 *Automated by Centralized Terraform Controller* | `;
