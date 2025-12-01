@@ -1171,7 +1171,6 @@ jobs:
                     const dep = result.deployment;
                     comment += `#### 🎯 ${dep.account_name} / ${dep.region} / ${dep.project}\n\n`;
                     comment += `<table>\n`;
-                    comment += `<tr><td><b>🔑 Backend Key</b></td><td><code>${result.backend_key || 'N/A'}</code></td></tr>\n`;
                     comment += `<tr><td><b>🏗️ Services</b></td><td>${result.services ? result.services.join(', ') : 'N/A'}</td></tr>\n`;
                     comment += `</table>\n\n`;
                     
@@ -1184,6 +1183,41 @@ jobs:
                         if (added !== '0') comment += `- 🟢 ➕ **${added}** created\n`;
                         if (changed !== '0') comment += `- 🟡 📝 **${changed}** updated\n`;
                         if (destroyed !== '0') comment += `- 🔴 🗑️ **${destroyed}** destroyed\n`;
+                      }
+                      
+                      // Display terraform outputs from orchestrator script
+                      if (result.outputs) {
+                        comment += `\n**📦 Terraform Outputs**:\n`;
+                        
+                        // Resource details (ARNs and names extracted by orchestrator)
+                        if (result.outputs.resource_details) {
+                          const details = result.outputs.resource_details;
+                          Object.keys(details).forEach(service => {
+                            const serviceData = details[service];
+                            
+                            // Show ARNs
+                            if (serviceData.arns && serviceData.arns.length > 0) {
+                              comment += `\n**${service.toUpperCase()} ARNs**:\n`;
+                              serviceData.arns.slice(0, 5).forEach(arn => {
+                                comment += `- \`${arn}\`\n`;
+                              });
+                              if (serviceData.arns.length > 5) {
+                                comment += `- ... and ${serviceData.arns.length - 5} more\n`;
+                              }
+                            }
+                            
+                            // Show names
+                            if (serviceData.names && serviceData.names.length > 0) {
+                              comment += `\n**${service.toUpperCase()} Resources**:\n`;
+                              serviceData.names.slice(0, 5).forEach(name => {
+                                comment += `- ${name}\n`;
+                              });
+                              if (serviceData.names.length > 5) {
+                                comment += `- ... and ${serviceData.names.length - 5} more\n`;
+                              }
+                            }
+                          });
+                        }
                       }
                     }
                     
@@ -1239,9 +1273,8 @@ jobs:
             }
             
             comment += `<details>\n<summary>🔗 Useful Links</summary>\n\n`;
-            comment += `- 🤖 [View Apply Run](https://github.com/Terraform-centilazed-pipline/centerlized-pipline-/actions/runs/${{ github.run_id }})\n`;
             comment += `- 📦 [View Merged PR](#${{ github.event.client_payload.pr_number }})\n`;
-            comment += `- 📖 [Terraform Modules](https://github.com/Terraform-centilazed-pipline/tf-module)\n`;
+            comment += `- 📖 [Deployment Guide]()\n`;
             comment += `</details>\n\n`;
             
             comment += `---\n`;
