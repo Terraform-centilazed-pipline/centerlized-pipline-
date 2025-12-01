@@ -4,38 +4,26 @@
 - AWS CLI configured with admin permissions
 - Terraform v1.5+
 - GitHub repository with Actions enabled
-- AWS account with permissions to create DynamoDB tables and S3 bucket policies
+- AWS account with permissions to manage S3 bucket policies
 
-## 1. Create DynamoDB State Lock Table
+## 1. Verify Terraform Built-in Locking
 
-Run this command in your terminal:
+Your `providers.tf` already has built-in state locking enabled:
 
-```bash
-aws dynamodb create-table \
-  --table-name terraform-state-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region us-east-1
-```
-
-**Verify it was created:**
-```bash
-aws dynamodb describe-table --table-name terraform-state-locks --region us-east-1
-```
-
-Expected output:
-```json
-{
-  "Table": {
-    "TableName": "terraform-state-locks",
-    "TableStatus": "ACTIVE",
-    "BillingModeSummary": {
-      "BillingMode": "PAY_PER_REQUEST"
-    }
-  }
+```terraform
+backend "s3" {
+  bucket  = "terraform-elb-mdoule-poc"
+  encrypt = true
+  use_lockfile = true  # ✅ Already configured
 }
 ```
+
+**How it works:**
+- Terraform creates `.tflock` files in S3 during operations
+- Locks are automatically acquired before plan/apply
+- Locks are automatically released after completion
+- No additional AWS resources needed (no DynamoDB)
+- Zero cost for state locking
 
 ## 2. Update S3 Bucket Policy
 
@@ -199,17 +187,6 @@ cat > github-actions-policy.json << 'EOF'
       ]
     },
     {
-      "Sid": "DynamoDBStateLocking",
-      "Effect": "Allow",
-      "Action": [
-        "dynamodb:DescribeTable",
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:DeleteItem"
-      ],
-      "Resource": "arn:aws:dynamodb:us-east-1:YOUR_ACCOUNT_ID:table/terraform-state-locks"
-    },
-    {
       "Sid": "TerraformResourceCreation",
       "Effect": "Allow",
       "Action": [
@@ -241,13 +218,15 @@ aws iam put-role-policy \
 cd /path/to/workspace
 terraform init \
   -backend-config="key=test/state.tfstate" \
-  -backend-config="region=us-east-1" \
-  -backend-config="dynamodb_table=terraform-state-locks"
+  -backend-config="region=us-east-1"
 
 terraform apply
 
 # In another terminal (should wait for lock)
 terraform apply
+
+# Check for lock files in S3
+aws s3 ls s3://terraform-elb-mdoule-poc/ --recursive | grep ".tflock"
 ```
 
 ### Test 2: Backup Creation
@@ -318,34 +297,19 @@ aws cloudwatch put-metric-alarm \
 
 Run this checklist:
 
-- [ ] DynamoDB table `terraform-state-locks` exists
+- [ ] Terraform backend has `use_lockfile = true` configured
 - [ ] S3 bucket policy updated with correct IAM role ARN
 - [ ] S3 bucket versioning enabled
 - [ ] S3 lifecycle policies configured (optional)
-- [ ] IAM role has DynamoDB permissions
 - [ ] IAM role has S3 permissions
 - [ ] Test deployment creates backup in S3
 - [ ] Test deployment creates audit log in S3
 - [ ] PR comments show redacted sensitive data
 - [ ] Audit logs contain full unredacted data
 - [ ] Failed apply triggers rollback (test with intentional error)
-- [ ] State locking prevents concurrent applies
+- [ ] State locking prevents concurrent applies (check for .tflock files)
 
 ## 9. Troubleshooting
-
-### Issue: DynamoDB table not found
-```bash
-# Check if table exists
-aws dynamodb describe-table --table-name terraform-state-locks --region us-east-1
-
-# If not found, recreate it
-aws dynamodb create-table \
-  --table-name terraform-state-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region us-east-1
-```
 
 ### Issue: Backup/Audit logs not appearing in S3
 ```bash
@@ -360,13 +324,14 @@ aws s3 cp test.txt s3://terraform-elb-mdoule-poc/test/test.txt
 
 ### Issue: State lock timeout
 ```bash
-# List active locks
-aws dynamodb scan --table-name terraform-state-locks
+# Check for lock files in S3
+aws s3 ls s3://terraform-elb-mdoule-poc/ --recursive | grep ".tflock"
 
-# Delete stuck lock (CAREFUL!)
-aws dynamodb delete-item \
-  --table-name terraform-state-locks \
-  --key '{"LockID": {"S": "terraform-elb-mdoule-poc/path/to/state.tfstate"}}'
+# View lock file contents
+aws s3 cp s3://terraform-elb-mdoule-poc/path/to/state.tfstate.tflock - | jq .
+
+# Delete stuck lock (CAREFUL! - only if you're sure no operation is running)
+aws s3 rm s3://terraform-elb-mdoule-poc/path/to/state.tfstate.tflock
 ```
 
 ### Issue: Redaction not working
@@ -385,9 +350,8 @@ EOF
 
 ## 10. Cost Estimates
 
-### DynamoDB State Locks
-- **On-Demand Mode**: $0.00 (typically < 25 operations/month)
-- **Provisioned Mode**: $0.52/month (1 RCU + 1 WCU)
+### State Locking
+- **Terraform Built-in Lockfile**: $0.00 (uses S3 objects, no additional cost)
 
 ### S3 Storage
 - **State Files**: ~1MB each = $0.023/GB/month = ~$0.02/month
@@ -399,8 +363,7 @@ EOF
 - **GET requests**: ~5 per deployment = $0.0004/1000 = negligible
 
 ### Total Estimated Cost
-- **Monthly**: ~$0.53 (mostly DynamoDB if using provisioned mode)
-- **With On-Demand DynamoDB**: ~$0.03/month
+- **Monthly**: ~$0.03/month (S3 storage only)
 
 ## Summary
 

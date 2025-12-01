@@ -650,16 +650,15 @@ Please fix the errors and push to a new branch.
                 import traceback
                 traceback.print_exc()
             
-            # Initialize Terraform with dynamic backend + STATE LOCKING
+            # Initialize Terraform with dynamic backend
             init_cmd = [
                 'init', '-input=false',
                 f'-backend-config=key={backend_key}',
-                f'-backend-config=region=us-east-1',
-                f'-backend-config=dynamodb_table=terraform-state-locks'  # State locking
+                f'-backend-config=region=us-east-1'
             ]
             
             print(f"🔄 Initializing Terraform with backend key: {backend_key}")
-            print(f"🔒 State locking enabled via DynamoDB table: terraform-state-locks")
+            print(f"🔒 State locking enabled via Terraform built-in lockfile (use_lockfile=true)")
             
             init_result = self._run_terraform_command(init_cmd, main_dir)
             if init_result['returncode'] != 0:

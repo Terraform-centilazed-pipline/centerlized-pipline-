@@ -4,6 +4,7 @@ terraform {
   backend "s3" {
     bucket  = "terraform-elb-mdoule-poc"
     encrypt = true
+    use_lockfile = true
 
     # The 'key' and 'region' must be provided via CLI, do not define them here.
 

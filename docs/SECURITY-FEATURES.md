@@ -236,28 +236,24 @@ def _save_audit_log(self, deployment: Dict, result: Dict, action: str) -> bool:
 - **CI/CD safety**: Prevents parallel workflow runs from conflicting
 
 ### Implementation
-- **Service**: AWS DynamoDB table
-- **Table Name**: `terraform-state-locks`
-- **Configuration**: Added to terraform init command
+- **Service**: Terraform built-in S3 state locking
+- **Configuration**: `use_lockfile = true` in backend configuration
+- **How it works**: Terraform creates `.tflock` files in S3 to prevent concurrent operations
 
-```python
-init_cmd = [
-    'init', '-input=false',
-    f'-backend-config=key={backend_key}',
-    f'-backend-config=region=us-east-1',
-    f'-backend-config=dynamodb_table=terraform-state-locks'  # State locking
-]
+```terraform
+backend "s3" {
+  bucket  = "terraform-elb-mdoule-poc"
+  encrypt = true
+  use_lockfile = true  # Enable built-in state locking
+}
 ```
 
-### DynamoDB Table Setup
-```bash
-aws dynamodb create-table \
-  --table-name terraform-state-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region us-east-1
-```
+### Benefits of Built-in Locking
+- ✅ No additional AWS resources required (no DynamoDB table)
+- ✅ Zero cost for state locking
+- ✅ Automatic cleanup of lock files
+- ✅ Native Terraform integration
+- ✅ Works with Terraform 1.11+
 
 ## 5. PR Comment Security
 
@@ -324,10 +320,10 @@ Created KMS key: arn:aws:kms:us-east-1:***ACCOUNT-ID***:key/***KEY-ID***
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 5. Terraform Apply                                          │
-│    - Acquire DynamoDB state lock                            │
+│    - Acquire S3 state lock (.tflock file)                   │
 │    - Execute terraform apply                                │
 │    - Capture all output (stdout + stderr)                   │
-│    - Release state lock                                     │
+│    - Release state lock automatically                       │
 └─────────────────────────────────────────────────────────────┘
                             ↓
                     ┌──────────────┐
@@ -385,14 +381,14 @@ Created KMS key: arn:aws:kms:us-east-1:***ACCOUNT-ID***:key/***KEY-ID***
 
 ## 8. Manual Setup Requirements
 
-### 1. Create DynamoDB Table
-```bash
-aws dynamodb create-table \
-  --table-name terraform-state-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region us-east-1
+### 1. Verify State Locking Configuration
+Your `providers.tf` already has built-in state locking enabled:
+```terraform
+backend "s3" {
+  bucket  = "terraform-elb-mdoule-poc"
+  encrypt = true
+  use_lockfile = true  # ✅ No additional setup needed
+}
 ```
 
 ### 2. Configure S3 Bucket Policies
@@ -497,12 +493,12 @@ terraform state list
 1. Start terraform apply in one workflow
 2. Try to start another apply immediately
 3. Verify second apply waits for lock
-4. Check DynamoDB for lock entries
+4. Check S3 for lock files
 
 ```bash
-# Check lock table
-aws dynamodb scan --table-name terraform-state-locks
-# Should show active lock during apply
+# Check for lock files in S3
+aws s3 ls s3://terraform-elb-mdoule-poc/ --recursive | grep ".tflock"
+# Should show active .tflock file during apply
 ```
 
 ## 10. Monitoring & Alerting
@@ -553,7 +549,7 @@ aws cloudwatch put-metric-alarm \
 
 ### Operations
 - ✅ Test rollback mechanism in non-production first
-- ✅ Monitor DynamoDB table for stuck locks
+- ✅ Monitor S3 for stuck .tflock files
 - ✅ Clean up old backups (30 days+)
 - ✅ Review redaction patterns for new AWS services
 - ✅ Document any custom redaction rules
@@ -585,14 +581,16 @@ aws cloudwatch put-metric-alarm \
 - Check for S3 bucket policies blocking writes
 
 ### State Lock Timeouts
-- Check DynamoDB table exists: `terraform-state-locks`
-- Verify IAM permissions for DynamoDB operations
-- Look for stuck locks in DynamoDB table
+- Verify `use_lockfile = true` is set in backend configuration
+- Check S3 permissions for lock file operations
+- Look for stuck .tflock files in S3
 - Manually release stuck locks if needed:
 ```bash
-aws dynamodb delete-item \
-  --table-name terraform-state-locks \
-  --key '{"LockID": {"S": "terraform-elb-mdoule-poc/path/to/state.tfstate"}}'
+# Check for lock files
+aws s3 ls s3://terraform-elb-mdoule-poc/ --recursive | grep ".tflock"
+
+# Delete stuck lock (CAREFUL!)
+aws s3 rm s3://terraform-elb-mdoule-poc/path/to/state.tfstate.tflock
 ```
 
 ## Summary
