@@ -1,0 +1,400 @@
+#!/bin/bash
+#
+# Convert Markdown to PDF - Installation and Conversion Script
+#
+# This script provides multiple methods to convert the Markdown documentation to PDF
+#
+
+MD_FILE="docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.md"
+PDF_FILE="docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.pdf"
+HTML_FILE="docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.html"
+
+echo "=================================================="
+echo "AWS DevOps Agent Integration - PDF Conversion"
+echo "=================================================="
+echo ""
+
+# Method 1: Check if pandoc is available
+if command -v pandoc &> /dev/null; then
+    echo "✓ Found pandoc - converting using pandoc..."
+    pandoc "$MD_FILE" \
+        -o "$PDF_FILE" \
+        --pdf-engine=pdflatex \
+        -V geometry:margin=1in \
+        -V linkcolor:blue \
+        -V fontsize=11pt \
+        --toc \
+        --toc-depth=3 \
+        2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo "✓ Successfully created PDF using pandoc: $PDF_FILE"
+        exit 0
+    else
+        echo "✗ Pandoc conversion failed"
+    fi
+fi
+
+# Method 2: Check if Python packages are available
+if python3 -c "import markdown2, weasyprint" 2>/dev/null; then
+    echo "✓ Found Python packages - converting using Python..."
+    python3 scripts/convert-md-to-pdf.py "$MD_FILE" "$PDF_FILE"
+    
+    if [ $? -eq 0 ]; then
+        echo "✓ Successfully created PDF using Python: $PDF_FILE"
+        exit 0
+    fi
+fi
+
+# Method 3: Create HTML file that can be printed to PDF
+echo ""
+echo "Creating HTML version for browser-based PDF conversion..."
+echo ""
+
+cat > "$HTML_FILE" << 'HTMLEOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AWS DevOps Agent Integration v2.0</title>
+    <style>
+        @media print {
+            body { margin: 0.5in; }
+            .no-print { display: none; }
+            .page-break { page-break-after: always; }
+            pre, code { page-break-inside: avoid; }
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 1000px;
+            margin: 40px auto;
+            padding: 0 20px;
+            color: #333;
+            background: #fff;
+        }
+        
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+            margin-top: 40px;
+        }
+        
+        h2 {
+            color: #2980b9;
+            border-bottom: 2px solid #bdc3c7;
+            padding-bottom: 8px;
+            margin-top: 30px;
+        }
+        
+        h3 {
+            color: #16a085;
+            margin-top: 25px;
+        }
+        
+        h4 {
+            color: #27ae60;
+            margin-top: 20px;
+        }
+        
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #c7254e;
+        }
+        
+        pre {
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            overflow-x: auto;
+            margin: 20px 0;
+        }
+        
+        pre code {
+            background-color: transparent;
+            padding: 0;
+            color: #333;
+        }
+        
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        
+        th {
+            background-color: #3498db;
+            color: white;
+            font-weight: 600;
+        }
+        
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        
+        blockquote {
+            border-left: 4px solid #3498db;
+            padding-left: 20px;
+            margin-left: 0;
+            color: #555;
+            font-style: italic;
+        }
+        
+        a {
+            color: #3498db;
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+        }
+        
+        .banner {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        .banner h1 {
+            color: white;
+            border: none;
+            margin: 0;
+            font-size: 2.5em;
+        }
+        
+        .banner p {
+            margin: 10px 0 0 0;
+            font-size: 1.1em;
+        }
+        
+        .toc {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 20px;
+            margin: 30px 0;
+        }
+        
+        .toc h2 {
+            margin-top: 0;
+            border: none;
+        }
+        
+        .toc ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        
+        .toc li {
+            margin: 8px 0;
+        }
+        
+        .toc a {
+            color: #495057;
+        }
+        
+        .print-button {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #3498db;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+        
+        .print-button:hover {
+            background: #2980b9;
+        }
+        
+        .metadata {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        
+        .diagram {
+            background: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 5px;
+            padding: 20px;
+            margin: 25px 0;
+            overflow-x: auto;
+        }
+        
+        hr {
+            border: none;
+            border-top: 2px solid #dee2e6;
+            margin: 40px 0;
+        }
+    </style>
+</head>
+<body>
+    <button class="print-button no-print" onclick="window.print()">📄 Save as PDF</button>
+    
+    <div class="banner">
+        <h1>AWS DevOps Agent Integration</h1>
+        <p>Architecture Documentation v2.0</p>
+        <p style="font-size: 0.9em; margin-top: 15px;">Enterprise Production-Ready Implementation</p>
+    </div>
+    
+    <div class="metadata">
+        <strong>Document Version:</strong> 2.0<br>
+        <strong>Date:</strong> December 5, 2025<br>
+        <strong>Author:</strong> Enterprise DevOps Team<br>
+        <strong>Status:</strong> Production-Ready Architecture
+    </div>
+    
+    <div class="toc">
+        <h2>📑 Table of Contents</h2>
+        <ul>
+            <li><a href="#executive-summary">1. Executive Summary</a></li>
+            <li><a href="#architecture-overview">2. Architecture Overview</a></li>
+            <li><a href="#system-components">3. System Components</a></li>
+            <li><a href="#integration-flow">4. Integration Flow</a></li>
+            <li><a href="#data-models">5. Data Models</a></li>
+            <li><a href="#implementation-details">6. Implementation Details</a></li>
+            <li><a href="#validation-scenarios">7. Validation Scenarios</a></li>
+            <li><a href="#deployment-guide">8. Deployment Guide</a></li>
+            <li><a href="#operational-procedures">9. Operational Procedures</a></li>
+            <li><a href="#appendix">10. Appendix</a></li>
+        </ul>
+    </div>
+    
+    <script>
+        // Load and render the markdown content
+        fetch('AWS-DEVOPS-AGENT-INTEGRATION-v2.0.md')
+            .then(response => response.text())
+            .then(markdown => {
+                // Basic markdown to HTML conversion
+                let html = markdown
+                    // Headers
+                    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+                    .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+                    .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+                    // Bold
+                    .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')
+                    // Italic
+                    .replace(/\*(.*?)\*/gim, '<em>$1</em>')
+                    // Code blocks
+                    .replace(/```(\w+)?\n([\s\S]*?)```/gim, '<pre><code>$2</code></pre>')
+                    // Inline code
+                    .replace(/`([^`]+)`/gim, '<code>$1</code>')
+                    // Links
+                    .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2">$1</a>')
+                    // Line breaks
+                    .replace(/\n\n/gim, '</p><p>')
+                    // Horizontal rules
+                    .replace(/^---$/gim, '<hr>');
+                
+                document.getElementById('content').innerHTML = '<p>' + html + '</p>';
+            })
+            .catch(error => {
+                // If fetch fails, show instructions
+                document.getElementById('content').innerHTML = `
+                    <div style="padding: 40px; background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px;">
+                        <h2>📄 How to Create PDF</h2>
+                        <p><strong>Method 1: Print from Browser (Recommended)</strong></p>
+                        <ol>
+                            <li>Open this HTML file in your browser</li>
+                            <li>Click the "Save as PDF" button (or press Cmd+P / Ctrl+P)</li>
+                            <li>Select "Save as PDF" as the destination</li>
+                            <li>Click Save</li>
+                        </ol>
+                        
+                        <p><strong>Method 2: Install Pandoc</strong></p>
+                        <pre><code>brew install pandoc basictex
+pandoc docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.md -o docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.pdf</code></pre>
+                        
+                        <p><strong>Method 3: Install Python Packages</strong></p>
+                        <pre><code>pip3 install markdown2 weasyprint
+python3 scripts/convert-md-to-pdf.py docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.md docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.pdf</code></pre>
+                        
+                        <p><strong>Markdown file location:</strong><br>
+                        <code>docs/AWS-DEVOPS-AGENT-INTEGRATION-v2.0.md</code></p>
+                    </div>
+                `;
+            });
+    </script>
+    
+    <div id="content">
+        <!-- Markdown content will be loaded here, or use the file directly -->
+        <p>Loading content...</p>
+    </div>
+    
+    <hr>
+    <div style="text-align: center; color: #6c757d; padding: 20px;">
+        <p><strong>AWS DevOps Agent Integration Architecture v2.0</strong></p>
+        <p>Enterprise DevOps Team | December 5, 2025</p>
+    </div>
+</body>
+</html>
+HTMLEOF
+
+echo "✓ Created HTML file: $HTML_FILE"
+echo ""
+echo "=================================================="
+echo "PDF Conversion Instructions"
+echo "=================================================="
+echo ""
+echo "The Markdown documentation has been created at:"
+echo "  📄 $MD_FILE"
+echo ""
+echo "To create a PDF, choose one of the following methods:"
+echo ""
+echo "Method 1: Open HTML in Browser (Easiest)"
+echo "  1. Open: $HTML_FILE"
+echo "  2. Press Cmd+P (Mac) or Ctrl+P (Windows/Linux)"
+echo "  3. Select 'Save as PDF'"
+echo "  4. Click Save"
+echo ""
+echo "Method 2: Install Pandoc"
+echo "  brew install pandoc basictex"
+echo "  pandoc $MD_FILE -o $PDF_FILE"
+echo ""
+echo "Method 3: Install Python Packages"
+echo "  pip3 install markdown2 weasyprint"
+echo "  python3 scripts/convert-md-to-pdf.py $MD_FILE $PDF_FILE"
+echo ""
+echo "=================================================="
+
+# Open the HTML file in default browser (macOS)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo ""
+    read -p "Would you like to open the HTML file in your browser now? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        open "$HTML_FILE"
+        echo "✓ Opened HTML file in browser"
+        echo "  Use Cmd+P to print/save as PDF"
+    fi
+fi
