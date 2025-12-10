@@ -6,561 +6,125 @@
 
 ---
 
-## 🎯 **Core Design Principles**
+## 🎯 **What This System Does**
 
-> **Production-Ready PoC: Automated Infrastructure Deployment with Policy Enforcement**
+**Simple Workflow:**
+1. Developer pushes infrastructure code → System creates PR automatically
+2. OPA validates against security policies → Labels PR (pass/fail)
+3. Human reviews Terraform plan → Approves if safe
+4. System merges to environment branch → Deploys to AWS
+
+**Key Benefits:**
+- No manual PR creation or policy checks
+- Consistent security validation every time
+- Complete audit trail in GitHub PRs
+- Faster deployments with parallel execution
+
+**Status:** Production-ready PoC
 
 ---
 
-### **📋 System Overview**
+## 📊 **Architecture Overview**
 
-```mermaid
-graph TB
-    START([Developer Push]) --> PR[Auto PR Creation]
-    PR --> VALIDATE[Policy Validation]
-    VALIDATE -->|Pass| REVIEW[Human Review]
-    VALIDATE -->|Fail| FIX[Fix & Retry]
-    FIX --> VALIDATE
-    REVIEW --> MERGE[Auto Merge]
-    MERGE --> DEPLOY[Deploy Infrastructure]
-    
-    style START fill:#e3f2fd,stroke:#1976d2,stroke-width:3px
-    style VALIDATE fill:#ffebee,stroke:#c62828,stroke-width:4px
-    style DEPLOY fill:#e8f5e9,stroke:#388e3c,stroke-width:3px
+**Two-Repository Model:**
+
+**dev-deployment** (Developer Repo)
+- Stores infrastructure configurations (.tfvars files)
+- Teams own their service configs
+- Triggers workflows on code push
+
+**centralized-pipeline-** (Controller Repo)  
+- Contains all Terraform logic (main.tf)
+- Manages OPA security policies
+- Orchestrates validation and deployment
+
+**Why This Design:**
+- Update Terraform logic once → applies to all teams
+- Centralized security policies → no bypasses possible
+- Teams work independently on configs
+- Easier to maintain and audit
+
+---
+
+## 🔄 **How It Works (3 Phases)**
+
+### **Phase 1: Validate**
+- Developer pushes code → Auto PR created
+- Terraform generates plan → OPA validates
+- PR labeled: `opa-passed` or `opa-failed`
+- Comment shows what will change
+
+### **Phase 2: Merge**  
+- Human approves PR (if OPA passed)
+- System reads environment from PR comment
+- Maps to branch: development→dev, staging→stage, production→prod
+- Auto-merges to correct branch
+
+### **Phase 3: Deploy**
+- Merge triggers deployment workflow
+- Security check: must have `opa-passed` label
+- Terraform applies changes to AWS
+- Results posted back to PR
+
+**Security Gates:**
+- Can't merge if OPA failed
+- Can't deploy without `opa-passed` label
+- All actions logged in PR comments
+
+---
+
+## ⏱️ **Time Savings (Estimated)**
+
+Based on PoC testing with 100 deployments/month:
+
+- **PR Creation:** ~25 hours/month saved (automated vs manual)
+- **Policy Validation:** ~50 hours/month saved (OPA vs manual review)  
+- **Deployment:** ~33 hours/month saved (parallel vs sequential)
+
+**Total: ~140 hours/month** freed for other work
+
+*Note: Actual savings vary by team size and deployment frequency*
+
+---
+
+## 🔒 **Security Features**
+
+**Multi-Layer Protection:**
+1. **OPA Policy Engine** - Validates every change automatically
+2. **Human Approval** - Peer review required before merge
+3. **Merge Gate** - Can't merge if OPA failed
+4. **Deploy Gate** - Can't deploy without `opa-passed` label
+
+**Audit Trail:**
+- Git commit history (who, what, when)
+- PR comments (validation results, approvals)
+- Workflow logs (deployment details)
+- All searchable and traceable
+
+**No Bypasses:** System enforces all checks - no manual overrides in PoC
+
+---
+
+## 🎯 **Supported Services**
+
+Works with any AWS service - just add .tfvars file:
+
+- **S3** - Buckets and policies
+- **KMS** - Encryption keys  
+- **IAM** - Roles and policies
+- **Lambda** - Functions
+- **SQS/SNS** - Queues and topics
+- **Any other** - Add new directory, system auto-detects
+
+**Directory Structure:**
+```
+dev-deployment/
+  S3/service-name/service-name.tfvars
+  KMS/key-name/key-name.tfvars
+  IAM/role-name/role-name.tfvars
 ```
 
-**What This System Does:**
-1. Automatically creates pull requests when developers push infrastructure code
-2. Validates all changes against security policies (OPA/Checkov)
-3. Generates Terraform plans for human review
-4. Auto-merges approved changes to environment branches
-5. Deploys infrastructure to AWS automatically
-
-**Status:** PoC validated, production-ready architecture
-
----
-
-### **⚡ Key Features**
-
-<table>
-<tr>
-<th width="25%">Feature</th>
-<th width="35%">How It Works</th>
-<th width="40%">Benefit</th>
-</tr>
-<tr>
-<td><strong>🛡️ Automated Policy Validation</strong></td>
-<td>OPA policies check every infrastructure change before deployment</td>
-<td>
-• Prevents unauthorized changes<br/>
-• Ensures compliance standards<br/>
-• Catches issues early in PR stage
-</td>
-</tr>
-<tr>
-<td><strong>⚡ Full Workflow Automation</strong></td>
-<td>GitHub Actions orchestrates PR creation, validation, merge, and deployment</td>
-<td>
-• Faster deployment cycles<br/>
-• Consistent process every time<br/>
-• Less manual work for teams
-</td>
-</tr>
-<tr>
-<td><strong>🎯 Centralized Control</strong></td>
-<td>One controller workflow manages logic for all dev teams</td>
-<td>
-• Update policies in one place<br/>
-• Consistent rules across teams<br/>
-• Easier to maintain
-</td>
-</tr>
-<tr>
-<td><strong>📈 Parallel Execution</strong></td>
-<td>Python orchestrator deploys multiple resources simultaneously</td>
-<td>
-• Faster deployments (tested: 60-70% speedup)<br/>
-• Better resource utilization<br/>
-• Scales with team growth
-</td>
-</tr>
-</table>
-
----
-
-### **🎯 Positioning**
-
-```mermaid
-%%{init: {'theme':'base'}}%%
-quadrantChart
-    title Infrastructure Automation Approaches
-    x-axis Manual --> Automated
-    y-axis Weak Controls --> Strong Controls
-    quadrant-1 "Target State"
-    quadrant-2 "Slow & Controlled"
-    quadrant-3 "Manual Everything"
-    quadrant-4 "Fast but Risky"
-    "Traditional Setup": [0.25, 0.60]
-    "No Governance": [0.80, 0.20]
-    "Heavy Approvals": [0.30, 0.85]
-    "This PoC": [0.85, 0.88]
-```
-
-**Design Goal:** Combine automation (speed) with mandatory policy checks (safety). No manual coordination needed, but all changes must pass validation.
-
----
-
-### **⏱️ Efficiency Gains (Estimated)**
-
-| Activity | Manual Process | With Automation | Time Saved |
-|----------|----------------|-----------------|------------|
-| **PR Creation** | ~15 min per deployment | Automatic (0 min) | **~25 hours/month** (100 deployments) |
-| **Policy Checks** | ~30 min manual review | Automatic OPA scan | **~50 hours/month** |
-| **Approval Routing** | ~20 min coordination | Auto-merge if passed | **~33 hours/month** |
-| **Deployment** | ~30 min per resource | Parallel execution (~10 min) | **~33 hours/month** |
-| **Audit Trail** | Manual documentation | Auto-generated | Always ready |
-
-**Estimated Monthly Savings:**
-- **~140 hours** in routine deployment tasks
-- **~1,680 hours/year** team capacity freed for feature work
-- Scales with deployment frequency (more deployments = more time saved)
-
-**Note:** These are estimates based on PoC testing. Actual savings depend on team size, deployment frequency, and current processes.
-
----
-
-### **🔒 Built-In Safeguards**
-
-```mermaid
-graph LR
-    subgraph "Automation Benefits"
-        E1[Auto-Documentation<br/>PR comments show changes]
-        E2[Rollback Capability<br/>Git history preserved]
-        E3[Policy Enforcement<br/>No bypass possible]
-    end
-    
-    subgraph "Audit & Compliance"
-        I1[All changes validated]
-        I2[All actions logged]
-        I3[All deployments traceable]
-    end
-    
-    subgraph "Performance"
-        S1[Dynamic resource discovery]
-        S2[Single-point policy updates]
-        S3[Parallel execution tested]
-    end
-    
-    E1 & E2 & E3 --> SAFE[Safety Features]
-    I1 & I2 & I3 --> AUDIT[Audit Trail]
-    S1 & S2 & S3 --> PERF[Performance]
-    
-    style SAFE fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px
-    style AUDIT fill:#ffcdd2,stroke:#c62828,stroke-width:3px
-    style PERF fill:#bbdefb,stroke:#1976d2,stroke-width:3px
-```
-
----
-
-### **🔧 Technical Implementation**
-
-**1. Event-Driven Architecture**
-- GitHub repository dispatch triggers controller workflow
-- Loose coupling between dev repos and controller
-- Easy to test and maintain independently
-
-**2. Dynamic Resource Discovery**
-- Workflow automatically detects changed .tfvars files
-- No hardcoded paths - supports any service type
-- Python orchestrator handles dependency resolution
-
-**3. Policy as Code**
-- OPA/Checkov policies stored in version control
-- Same policies enforced across all teams
-- Update once, applies everywhere
-
-**4. Environment Mapping**
-- Reads environment from validation comment
-- Automatically merges to correct branch (dev/stage/prod)
-- Prevents wrong-environment deployments
-
----
-
-### **📊 Scalability**
-
-| Operation | Current Manual Process | With This System | How It Scales |
-|-----------|------------------------|------------------|---------------|
-| **Add New Service** | Update multiple repos/workflows | Create directory + tfvars file | Same effort regardless of org size |
-| **Update Policy** | Coordinate across N teams | Update controller once | Effort doesn't grow with teams |
-| **Audit Review** | Search through repos manually | Query PR history/labels | Fast lookup, complete trail |
-| **Deploy Multiple Resources** | Sequential (slow) | Parallel execution | Faster with more resources |
-| **Onboard New Developer** | Learn custom processes | Push code, get feedback | Self-service model |
-
-**Practical Benefit:** System handles growth without proportional increase in operational overhead.
-
----
-
-### **🎓 What This Enables**
-
-| Area | Problem Solved | How | Result |
-|----|----------------|-----|--------|
-| **Speed** | Manual PR creation and routing | Automated workflow orchestration | Deploy faster, no waiting |
-| **Safety** | Inconsistent security checks | Mandatory OPA validation every time | All changes validated before merge |
-| **Scale** | Each team needs own workflows | Centralized controller for all teams | Update logic once, benefits all |
-| **Compliance** | Manual audit documentation | Auto-generated trail in PRs | Always audit-ready |
-| **Developer Experience** | Complex deployment procedures | Push code, system handles rest | Lower barrier to contribute |
-| **Maintenance** | Updates needed in N repos | Update controller repo only | Easier to maintain over time |
-
----
-
-### **🔮 Design Decisions**
-
-**Key architectural choices:**
-
-1. **Centralized Control Plane**
-   - Controller repo manages all workflow logic
-   - Dev repos only store configurations (.tfvars)
-   - Rationale: Update once, apply everywhere
-
-2. **Mandatory Policy Validation**
-   - Every PR must pass OPA checks before merge
-   - No override mechanism in PoC
-   - Rationale: Prevent unauthorized changes
-
-3. **Event-Driven Communication**
-   - Repository dispatch for loose coupling
-   - Controller and dev repos independent
-   - Rationale: Easier to test and maintain
-
-4. **Dynamic Path Discovery**
-   - No hardcoded service paths
-   - Supports any directory structure
-   - Rationale: Flexible for future services
-
-**Production Considerations:**
-- These are working PoC decisions
-- May need refinement based on real-world usage
-- Override mechanisms could be added if business requires (with audit trail)
-
----
-
-## 🏗️ **High-Level Architecture**
-
-```mermaid
-graph TB
-    subgraph "🏢 DEVELOPMENT TEAMS"
-        D1[Team A: S3 Configs]
-        D2[Team B: KMS Keys]
-        D3[Team C: IAM Policies]
-    end
-    
-    subgraph "📦 DEV REPOSITORIES"
-        R1[dev-deployment<br/>Service Configurations]
-    end
-    
-    subgraph "🎯 CENTRALIZED CONTROL PLANE"
-        C1[Controller Workflow]
-        C2[OPA Policy Engine]
-        C3[Terraform Orchestrator]
-        C4[Approval Manager]
-    end
-    
-    subgraph "☁️ AWS INFRASTRUCTURE"
-        I1[Development]
-        I2[Staging]
-        I3[Production]
-    end
-    
-    D1 & D2 & D3 -->|Push Code| R1
-    R1 -->|Dispatch Events| C1
-    C1 --> C2
-    C2 -->|Policy Check| C3
-    C3 -->|Requires Approval| C4
-    C4 -->|Deploy| I1 & I2 & I3
-    
-    style C1 fill:#fff3e0,stroke:#f57c00,stroke-width:3px
-    style C2 fill:#ffebee,stroke:#c62828,stroke-width:3px
-    style C3 fill:#e8f5e9,stroke:#388e3c,stroke-width:3px
-```
-
----
-
-## 🔄 **End-to-End Workflow Journey**
-
-```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'fontSize':'16px'}}}%%
-timeline
-    title Infrastructure Change Lifecycle
-    section Development
-        Developer Push : Code changes to feature branch
-        Auto-PR Created : System creates pull request automatically
-    section Validation
-        Plan Generated : Terraform calculates infrastructure changes
-        Policy Check : OPA validates against security policies
-        PR Labeled : Auto-labeled as opa-passed or opa-failed
-    section Review
-        Team Review : Engineers review plan and changes
-        Approval Required : Designated approver signs off
-    section Deployment
-        Environment Detection : Reads environment from validation comment
-        Branch Mapping : development→dev, staging→stage, production→prod
-        PR Merged : Auto-merge to target environment branch
-        Apply Triggered : Terraform applies approved changes
-        Infrastructure Updated : AWS resources created/updated
-```
-
----
-
-## 🎭 **Three-Phase Orchestration**
-
-### **Phase 1: VALIDATE** 🔍
-
-```mermaid
-graph LR
-    A[Code Push] --> B{Changed Files?}
-    B -->|*.tfvars<br/>*.json| C[Auto-Create PR]
-    C --> D[Dispatch Validate]
-    D --> E[Controller: Plan]
-    E --> F[OPA Validation]
-    F -->|Pass| G[✅ Label: opa-passed]
-    F -->|Fail| H[❌ Label: opa-failed]
-    G --> I[PR Comment: ✅ Safe to Deploy]
-    H --> J[PR Comment: ❌ Policy Violations]
-    
-    style G fill:#c8e6c9
-    style H fill:#ffcdd2
-    style F fill:#fff59d
-```
-
-**What Happens:**
-- System automatically creates a pull request
-- Terraform generates deployment plan
-- OPA engine validates against security policies
-- PR receives automated labels and detailed comments
-- Team knows immediately if changes are safe
-
----
-
-### **Phase 2: MERGE** ✅
-
-```mermaid
-graph LR
-    A[PR Approved] --> B{OPA Status?}
-    B -->|opa-passed| C[Read Environment<br/>from PR Comment]
-    B -->|opa-failed| D[🚫 Blocked<br/>Must Fix Issues]
-    
-    C --> E{Environment?}
-    E -->|development| F[Merge to dev]
-    E -->|staging| G[Merge to stage]
-    E -->|production| H[Merge to prod]
-    E -->|default| I[Merge to main]
-    
-    F & G & H & I --> L[Audit Trail Created]
-    
-    style C fill:#e1f5ff
-    style D fill:#ffcdd2
-    style L fill:#c8e6c9
-```
-
-**What Happens:**
-- Approval triggers merge workflow
-- System reads environment from validation comment
-- Maps to correct target branch (dev/stage/prod)
-- OPA failure = hard block (must fix to proceed)
-- Creates comprehensive audit trail
-
-**Branch Mapping Logic:**
-```javascript
-development   → dev
-staging       → stage
-production    → prod
-(other)       → main
-```
-
----
-
-### **Phase 3: APPLY** 🚀
-
-```mermaid
-graph LR
-    A[PR Merged] --> B[Dispatch Apply]
-    B --> C{Security Gate}
-    C -->|Has opa-passed?| D[Checkout Exact Commit]
-    C -->|No Label| E[🚫 Blocked: No Validation]
-    
-    D --> F[Terraform Init]
-    F --> G[Terraform Apply]
-    G --> H{Success?}
-    
-    H -->|Yes| I[✅ Infrastructure Updated]
-    H -->|No| J[❌ Rollback Available]
-    
-    I --> K[PR Comment: Success]
-    J --> L[PR Comment: Failure]
-    
-    style C fill:#fff59d
-    style E fill:#ffcdd2
-    style I fill:#c8e6c9
-    style J fill:#ffcdd2
-```
-
-**What Happens:**
-- Security gate verifies OPA approval exists
-- Deploys exact commit that was approved
-- Terraform applies infrastructure changes
-- Automatic rollback capability if failure occurs
-- Detailed deployment logs posted to PR
-
----
-
-## 🔒 **Security & Governance Framework**
-
-```mermaid
-graph TB
-    subgraph "🛡️ Multi-Layer Security"
-        S1[OPA Policy Enforcement]
-        S2[Approval Requirements]
-        S3[Audit Trail Logging]
-        S4[Environment Isolation]
-    end
-    
-    subgraph "📋 Policy Categories"
-        P1[Naming Conventions]
-        P2[Required Tags]
-        P3[Encryption Standards]
-        P4[Access Controls]
-        P5[Compliance Rules]
-    end
-    
-    subgraph "👥 Approval Flow"
-        A1[Developer: Initiate]
-        A2[Peer: Review & Approve]
-    end
-    
-    S1 --> P1 & P2 & P3 & P4 & P5
-    S2 --> A1 --> A2
-    S3 --> LOG[Immutable Audit Log]
-    S4 --> ENV[dev/stage/prod Separation]
-    
-    style S1 fill:#ffebee,stroke:#c62828
-    style S3 fill:#e3f2fd,stroke:#1976d2
-```
-
-**Key Security Features:**
-- ✅ **Policy as Code**: All security rules version-controlled
-- ✅ **Immutable Audit Trail**: Who, what, when, why logged
-- ✅ **Environment Isolation**: No cross-environment contamination
-- ✅ **Zero Exceptions**: OPA failures block deployment (no overrides)
-
----
-
-## 🎯 **Advanced Features**
-
-### **1. Dynamic Multi-Service Support**
-
-```yaml
-Supported Services:
-  ✓ S3 Buckets & Policies
-  ✓ KMS Encryption Keys
-  ✓ IAM Roles & Policies
-  ✓ Lambda Functions
-  ✓ SQS Queues
-  ✓ SNS Topics
-  ✓ ...easily extensible
-
-Directory Structure:
-  dev-deployment/
-    S3/              ← S3 configurations
-    KMS/             ← KMS keys
-    IAM/             ← IAM policies
-    Lambda/          ← Lambda functions
-```
-
-**Benefits:**
-- No hardcoded paths - fully dynamic
-- Add new services without code changes
-- Each team works independently
-
----
-
-### **2. Intelligent Orchestration**
-
-```python
-# Python orchestrator handles:
-- Parallel resource deployment
-- Dependency management
-- State file tracking
-- Policy file synchronization
-- Dynamic backend configuration
-```
-
-**Benefits:**
-- Faster deployments (parallel execution)
-- Automatic dependency resolution
-- Zero state conflicts
-
----
-
-### **3. Environment-Aware Deployment**
-
-```mermaid
-graph LR
-    A[Validation Comment] --> B[Extract Environment]
-    B --> C{Environment?}
-    C -->|development| D[dev branch]
-    C -->|staging| E[stage branch]
-    C -->|production| F[prod branch]
-    
-    D --> G[Dev AWS Account]
-    E --> H[Stage AWS Account]
-    F --> I[Prod AWS Account]
-    
-    style B fill:#e1f5ff
-    style C fill:#fff59d
-```
-
-**Benefits:**
-- No manual branch selection
-- Prevents wrong-environment deployments
-- Clear separation of concerns
-
----
-
-## 📊 **Operational Benefits**
-
-```mermaid
-mindmap
-  root((Business Value))
-    Speed
-      Auto PR Creation
-      Parallel Deployments
-      Fast Feedback Loop
-    Safety
-      Policy Enforcement
-      Peer Review Required
-      Rollback Capability
-    Compliance
-      Audit Trail
-      Access Controls
-      Change Documentation
-    Efficiency
-      Centralized Logic
-      Reusable Components
-      Reduced Manual Work
-```
-
----
-
-## 🎓 **Decision Matrix**
-
-| Scenario | Workflow Action | Security Check | Result |
-|----------|----------------|----------------|---------|
-| Developer pushes code | Auto-create PR | - | PR created |
-| PR opened/updated | Run validation | OPA policies | Labeled & commented |
-| Reviewer approves (OPA passed) | Merge to environment branch | Approval verified | PR merged |
-| Reviewer approves (OPA failed) | Block merge | Policy enforcement | Must fix violations |
-| PR merged to branch | Trigger apply | opa-passed label required | Infrastructure deployed |
-| No OPA label on merge | Security gate | Label check | Deployment blocked |
+No workflow changes needed to add new services.
 
 ---
 
@@ -949,196 +513,23 @@ Result:
   - Regulatory confidence (no exceptions to explain)
 ```
 
----
+### **6. State & Audit**
 
-### **🎯 Key Design Decision 6: State Management & Audit Trail**
+**State Storage:** S3 backend with DynamoDB locking, per-service state files
 
-**The Challenge: Distributed State with Centralized Control**
+**Audit Trail:**
+- Git history (who/when/what/why)
+- PR comments (validation, approvals)
+- Workflow logs (deployment results)
+- All searchable and permanent
 
-```mermaid
-graph TB
-    subgraph "🗄️ State Storage Strategy"
-        S1[S3 Backend]
-        S2[DynamoDB Locking]
-        S3[Encryption at Rest]
-        S4[Versioning Enabled]
-    end
-    
-    subgraph "📊 State Organization"
-        O1[Per-Service State Files]
-        O2[Environment Separation]
-        O3[No Cross-Contamination]
-    end
-    
-    subgraph "🔍 Audit Trail"
-        A1[Git Commit History]
-        A2[PR Comment Thread]
-        A3[Workflow Run Logs]
-        A4[State File Versions]
-        A5[Label History]
-    end
-    
-    S1 & S2 & S3 & S4 --> O1 & O2 & O3
-    O1 & O2 & O3 --> A1 & A2 & A3 & A4 & A5
-    
-    style S1 fill:#e3f2fd
-    style A1 fill:#c8e6c9
-```
+### **7. Parallel Execution**
 
-**State File Naming Convention:**
+Python orchestrator deploys multiple resources simultaneously.
 
-```hcl
-# Dynamic backend configuration
-terraform {
-  backend "s3" {
-    bucket = "terraform-state-${account_id}"
-    key    = "${service}/${environment}/${resource_name}/terraform.tfstate"
-    region = "us-east-1"
-    
-    # Examples:
-    # S3/dev/data-lake-prod/terraform.tfstate
-    # KMS/prod/encryption-key/terraform.tfstate
-    # IAM/stage/admin-role/terraform.tfstate
-  }
-}
-```
+**Example:** 3 S3 buckets deploy in 5 min (parallel) vs 15 min (sequential)
 
-**Complete Audit Trail Components:**
-
-```yaml
-1. Git History:
-   - Who made the change: Git author
-   - When: Commit timestamp
-   - What: File diff
-   - Why: Commit message
-
-2. PR Thread:
-   - Validation results: OPA output
-   - Reviewer comments: Discussion
-   - Approval chain: Who approved when
-   - Merge details: Auto-generated commit message
-
-3. Workflow Logs:
-   - Terraform plan output: Exact changes
-   - Apply results: Success/failure
-   - Timing information: Performance metrics
-
-4. Labels:
-   - opa-passed/failed: Policy compliance
-   - opa-override: Exception approval
-   - ready-for-review: Workflow status
-
-5. State Versions:
-   - S3 versioning: Point-in-time recovery
-   - Backup tracking: Rollback capability
-```
-
-**Immutable Audit Trail Example:**
-
-```markdown
-PR #123: Add S3 bucket for data-lake-prod
-├─ Commit: abc123 by @developer at 2025-12-10 10:00 UTC
-├─ Validation: ✅ OPA passed (Controller comment at 10:05 UTC)
-├─ Plan Output: 1 to add, 0 to change, 0 to destroy
-├─ Approval: @team-lead at 10:30 UTC
-├─ Environment: production (extracted from validation)
-├─ Merge: Auto-merged to 'prod' branch at 10:31 UTC
-├─ Apply: Started at 10:32 UTC, completed at 10:35 UTC
-└─ Result: ✅ S3 bucket created successfully
-```
-
----
-
-### **🎯 Key Design Decision 7: Parallel Execution & Orchestration**
-
-**The Problem: Sequential = Slow**
-
-```
-Traditional Approach:
-  Deploy Resource 1: 5 minutes
-  Wait...
-  Deploy Resource 2: 5 minutes
-  Wait...
-  Deploy Resource 3: 5 minutes
-  Total: 15 minutes ❌
-```
-
-**Our Solution: Intelligent Parallel Orchestration**
-
-```mermaid
-graph LR
-    subgraph "Python Orchestrator"
-        O[terraform-orchestrator.py]
-    end
-    
-    subgraph "Parallel Execution"
-        P1[Resource 1<br/>5 min]
-        P2[Resource 2<br/>5 min]
-        P3[Resource 3<br/>5 min]
-    end
-    
-    subgraph "Dependency Management"
-        D1[Analyze tfvars]
-        D2[Build dependency graph]
-        D3[Execute in waves]
-    end
-    
-    O --> D1 --> D2 --> D3
-    D3 -.->|Wave 1| P1 & P2
-    D3 -.->|Wave 2| P3
-    
-    style O fill:#fff3e0
-    style P1 fill:#c8e6c9
-    style P2 fill:#c8e6c9
-    style P3 fill:#fff9c4
-```
-
-**Orchestrator Intelligence:**
-
-```python
-class TerraformOrchestrator:
-    def parallel_deploy(self, resources):
-        # 1. Discover all resources from changed files
-        discoveries = self._discover_resources()
-        
-        # 2. Analyze dependencies (e.g., IAM role before Lambda)
-        dependency_graph = self._build_dependency_graph()
-        
-        # 3. Group into parallel waves
-        waves = self._create_execution_waves()
-        
-        # 4. Execute each wave in parallel
-        for wave in waves:
-            with ThreadPoolExecutor() as executor:
-                futures = [executor.submit(self._deploy, r) for r in wave]
-                results = [f.result() for f in futures]
-        
-        # 5. Aggregate results
-        return self._generate_summary(results)
-```
-
-**Real-World Performance:**
-
-| Scenario | Sequential | Parallel | Improvement |
-|----------|-----------|----------|-------------|
-| 3 independent S3 buckets | 15 min | 5 min | **67% faster** |
-| 5 KMS keys | 25 min | 5 min | **80% faster** |
-| Mixed: 2 IAM + 3 S3 | 20 min | 10 min | **50% faster** |
-
-**Safety Features:**
-
-```yaml
-Concurrency Controls:
-  - Max parallel: 10 resources
-  - State locking: DynamoDB prevents conflicts
-  - Failure isolation: One failure doesn't stop others
-  - Rollback support: Independent rollback per resource
-  
-Dependency Handling:
-  - Auto-detection: Analyzes resource references
-  - Wave execution: Dependencies run in order
-  - Cross-service: IAM → Lambda → S3 event
-```
+**Safety:** DynamoDB locking prevents conflicts, dependencies handled automatically.
 
 ---
 
@@ -1203,319 +594,45 @@ Dependency Handling:
 
 ---
 
-## 🔍 **Technical Architecture Deep Dive**
-
-### **Communication Flow**
-
-```mermaid
-sequenceDiagram
-    participant Dev as 👨‍💻 Developer
-    participant DevRepo as 📦 dev-deployment
-    participant Dispatch as 🔔 Dispatch Workflow
-    participant Controller as 🎯 Controller Workflow
-    participant OPA as 🛡️ Policy Engine
-    participant TF as ⚙️ Terraform
-    participant AWS as ☁️ AWS
-    
-    Note over Dev,AWS: Phase 1: VALIDATE
-    Dev->>DevRepo: git push feature-branch
-    DevRepo->>Dispatch: Trigger on push
-    Dispatch->>DevRepo: Create PR automatically
-    Dispatch->>Controller: Dispatch 'validate' event
-    Note right of Controller: source_repo: dev-deployment<br/>action: validate<br/>pr_number: 123
-    
-    Controller->>DevRepo: Checkout source code
-    Controller->>TF: terraform plan
-    TF-->>Controller: Plan output
-    Controller->>OPA: Validate plan
-    OPA-->>Controller: Pass/Fail + details
-    Controller->>DevRepo: Add label (opa-passed/failed)
-    Controller->>DevRepo: Comment with results
-    
-    Note over Dev,AWS: Phase 2: MERGE
-    Dev->>DevRepo: Approve PR
-    DevRepo->>Dispatch: Trigger on approval
-    Dispatch->>DevRepo: Read PR comments
-    Note right of Dispatch: Extract environment:<br/>development/staging/production
-    Dispatch->>Dispatch: Map to branch
-    Note right of Dispatch: development → dev<br/>staging → stage<br/>production → prod
-    Dispatch->>DevRepo: Merge PR to target branch
-    
-    Note over Dev,AWS: Phase 3: APPLY
-    DevRepo->>Dispatch: Trigger on merge
-    Dispatch->>Controller: Dispatch 'apply' event
-    Controller->>Controller: Verify opa-passed label
-    Controller->>TF: terraform apply
-    TF->>AWS: Deploy infrastructure
-    AWS-->>TF: Success/Failure
-    TF-->>Controller: Apply result
-    Controller->>DevRepo: Comment on PR
-```
-
----
-
-### **Repository Architecture**
-
-```mermaid
-graph TB
-    subgraph "📦 dev-deployment (Source Repository)"
-        D1[Service Configurations]
-        D2[.github/workflows/<br/>dispatch-to-controller.yml]
-        D3[Environment Branches<br/>dev / stage / prod / main]
-        
-        D4[S3/service-1/*.tfvars]
-        D5[KMS/service-2/*.tfvars]
-        D6[IAM/service-3/*.tfvars]
-    end
-    
-    subgraph "🎯 centerlized-pipline- (Controller Repository)"
-        C1[.github/workflows/<br/>centralized-controller.yml]
-        C2[scripts/<br/>terraform-orchestrator.py]
-        C3[main.tf<br/>Centralized Terraform]
-        C4[custom-checkov-policies/]
-        C5[deployment-rules.yaml]
-    end
-    
-    D2 -.->|Repository Dispatch| C1
-    C1 --> C2
-    C2 --> C3
-    C1 --> C4
-    C1 --> C5
-    
-    style D2 fill:#e3f2fd
-    style C1 fill:#fff3e0
-    style C3 fill:#e8f5e9
-    style C4 fill:#ffebee
-```
-
-**Key Insight:** 
-- **Dev repos**: Store only configurations (*.tfvars, *.json)
-- **Controller repo**: Houses all business logic, policies, and orchestration
-- **Benefit**: Single source of truth, easy updates, consistent governance
-
----
-
-## 🚀 **Deployment Patterns**
-
-### **Pattern 1: Standard Deployment**
-```
-Developer Push → Auto PR → Validation → Approval → Environment Merge → Apply → Success
-Time: ~5-10 minutes | Security: ✅ OPA Passed | Approval: ✅ Required
-```
-
-### **Pattern 2: Policy Failure (Requires Fix)**
-```
-Developer Push → Auto PR → Validation (Failed) → Fix Code → Re-validate → Merge → Apply
-Time: ~15-30 minutes | Security: ✅ Full Compliance | Approval: ✅ After Fix
-```
-
-### **Pattern 3: Multi-Service Update**
-```
-Parallel Changes → Multiple PRs → Independent Validations → Staged Approvals → Orchestrated Deploy
-Time: ~15-20 minutes | Security: ✅ Per-Service | Approval: ✅ Per-Service
-```
-
----
-
-## 📈 **Success Metrics**
-
-```mermaid
-graph LR
-    subgraph "⚡ Speed Metrics"
-        M1[PR Creation: < 30s]
-        M2[Validation: < 3min]
-        M3[Deployment: < 5min]
-    end
-    
-    subgraph "🛡️ Security Metrics"
-        M4[Policy Coverage: 100%]
-        M5[Approval Rate: 100%]
-        M6[Audit Trail: Complete]
-    end
-    
-    subgraph "📊 Quality Metrics"
-        M7[Failed Deploys: < 2%]
-        M8[Rollback Success: 100%]
-        M9[Change Accuracy: > 98%]
-    end
-    
-    style M1 fill:#c8e6c9
-    style M4 fill:#ffcdd2
-    style M7 fill:#fff9c4
-```
-
----
-
-## 🎯 **Why This Architecture?**
-
-### **Before (Traditional Approach)**
-❌ Manual PR creation  
-❌ Manual policy checks  
-❌ Scattered deployment logic  
-❌ Inconsistent approvals  
-❌ Limited audit trail  
-❌ Environment confusion  
-❌ Slow feedback loops  
-
-### **After (This System)**
-✅ **Automated PR creation** → Save hours per week  
-✅ **Real-time policy validation** → Catch issues before review  
-✅ **Centralized control** → Single source of truth  
-✅ **Enforced approvals** → Guaranteed governance  
-✅ **Complete audit trail** → Full compliance  
-✅ **Environment-aware** → Zero deployment mistakes  
-✅ **Instant feedback** → Minutes, not hours  
-
----
-
-## 🔧 **Technology Stack**
-
-```yaml
-Infrastructure as Code:
-  - Terraform 1.11.0
-  - AWS Provider
-
-Policy Engine:
-  - Open Policy Agent (OPA) 0.59.0
-  - Custom Checkov policies
-
-Orchestration:
-  - GitHub Actions
-  - Python 3.11 orchestrator
-
-Security:
-  - GitHub App authentication
-  - AWS OIDC (no static credentials)
-  - Multi-level approvals
-
-Monitoring:
-  - GitHub Actions logs
-  - Terraform state tracking
-  - PR comment audit trail
-```
-
----
-
 ## 📖 **Quick Reference**
 
-### **Common Workflows**
+**Common Tasks:**
+- Deploy S3 bucket → Push `S3/bucket-name.tfvars` → Auto PR → Approve → Done
+- Update KMS key → Modify `KMS/key-name.tfvars` → Auto PR → Approve → Done
+- Add IAM role → Create `IAM/role-name.tfvars` → Auto PR → Approve → Done
 
-| Task | Command/Action | Result |
-|------|----------------|--------|
-| Deploy new S3 bucket | Push `S3/bucket-name.tfvars` | Auto PR → Validate → Approve → Deploy |
-| Update KMS key policy | Modify `KMS/key-name.tfvars` | Auto PR → Validate → Approve → Apply |
-| Add IAM role | Create `IAM/role-name.tfvars` | Auto PR → Validate → Approve → Create |
-| Fix policy failure | Update code to meet policies | Re-validate → Pass → Merge |
-| Check deployment status | View PR comments | See plan, validation, apply results |
+**Key Files:**
+- `dispatch-to-controller.yml` - Dev repo workflow
+- `centralized-controller.yml` - Controller workflow
+- `terraform-orchestrator.py` - Parallel execution script
+- `custom-checkov-policies/` - OPA policy definitions
 
-### **Key Files**
-
-| File | Purpose | Location |
-|------|---------|----------|
-| `dispatch-to-controller.yml` | Orchestrates PR lifecycle | dev-deployment repo |
-| `centralized-controller.yml` | Executes validation & deployment | controller repo |
-| `terraform-orchestrator.py` | Parallel execution engine | controller repo |
-| `deployment-rules.yaml` | Environment rules | controller repo |
-| `custom-checkov-policies/` | OPA policy definitions | controller repo |
+**Technology Stack:**
+- Terraform 1.11.0, AWS Provider
+- OPA 0.59.0, Custom Checkov policies
+- GitHub Actions, Python 3.11
+- S3 state backend, DynamoDB locking
 
 ---
 
-## 🎓 **Best Practices**
+## ✅ **Summary**
 
-1. **Always use descriptive commit messages**
-   - ✅ `feat: add S3 bucket for data-lake-prod`
-   - ❌ `update`
+**What It Does:**
+- Automates infrastructure deployments from code push to AWS
+- Validates all changes with OPA security policies
+- Provides complete audit trail in GitHub
+- Supports any AWS service type
 
-2. **Review validation comments before approving**
-   - Check OPA results
-   - Verify resource changes
-   - Confirm environment mapping
+**Key Benefits:**
+- Saves ~140 hours/month on deployments
+- 100% policy compliance enforced
+- No manual coordination needed
+- Easy to scale across teams
 
-3. **Use environment-specific branches**
-   - `development` → deploys to dev
-   - `staging` → deploys to stage
-   - `production` → deploys to prod
-
-4. **Never bypass security gates**
-   - Policy failures indicate real risks
-   - Fix the code or update the policy
-   - No exceptions = no compliance gaps
-
-5. **Monitor PR comments for full audit trail**
-   - Validation results
-   - Approval chain
-   - Deployment status
-
----
-
-## 🚦 **System Status Dashboard**
-
-```mermaid
-graph TB
-    subgraph "🟢 Active Components"
-        A1[Auto PR Creation]
-        A2[OPA Validation]
-        A3[Environment Mapping]
-        A4[Parallel Deployment]
-        A5[Audit Logging]
-    end
-    
-    subgraph "🔵 Enhanced Features"
-        E1[Dynamic Path Support]
-        E2[Multi-Service Architecture]
-        E3[Environment Auto-Detection]
-    end
-    
-    subgraph "🟡 Planned Enhancements"
-        P1[Cost Estimation]
-        P2[Drift Detection]
-        P3[Auto-Remediation]
-    end
-    
-    style A1 fill:#c8e6c9
-    style E1 fill:#bbdefb
-    style P1 fill:#fff9c4
-```
-
----
-
-## 💡 **Executive Summary**
-
-This enterprise-grade Terraform pipeline provides:
-
-**🎯 Automation**: From code push to deployment, minimal manual intervention  
-**🛡️ Security**: Multi-layer policy enforcement with full audit trail  
-**⚡ Speed**: Parallel execution, instant feedback, rapid deployments  
-**🔒 Governance**: Required approvals, override tracking, compliance ready  
-**📊 Scalability**: Dynamic architecture supports unlimited services  
-**🎓 Simplicity**: Complex under the hood, simple for users  
-
-**Business Impact:**
-- Reduce deployment time by 80%
-- Eliminate manual errors
-- Ensure 100% policy compliance
-- Complete audit trail for SOC2/ISO compliance
-- Scale to hundreds of microservices
-
----
-
-## 📞 **Support & Documentation**
-
-| Resource | Location |
-|----------|----------|
-| Quick Start Guide | `docs/QUICK-START.md` |
-| Detailed Setup | `COMPLETE-PIPELINE-SETUP-GUIDE.md` |
-| Multi-Module Guide | `docs/MULTI-MODULE-GUIDE.md` |
-| GitHub App Setup | `docs/GITHUB-APP-SETUP.md` |
-| Terraform Best Practices | `docs/TERRAFORM-BEST-PRACTICES.md` |
+**Status:** Production-ready PoC
 
 ---
 
 **Version**: 2.0  
 **Last Updated**: December 2025  
-**Status**: Production Ready ✅  
-**License**: Internal Use Only  
-
----
-
-*Built with ❤️ for Enterprise Infrastructure Teams*
+**License**: Internal Use Only
