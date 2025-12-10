@@ -109,7 +109,13 @@ class TerraformOrchestrator:
             deployment_paths = set()
             files = []
             for file in changed_files:
+                # Try both absolute path and relative to working_dir
                 file_path = Path(file)
+                if not file_path.is_absolute():
+                    file_path = self.working_dir / file
+                
+                debug_print(f"Checking file: {file} -> resolved to: {file_path} (exists: {file_path.exists()})")
+                
                 if file_path.exists():
                     if file.endswith('.tfvars'):
                         # Direct tfvars file
@@ -117,16 +123,20 @@ class TerraformOrchestrator:
                         if deployment_path not in deployment_paths:
                             files.append(file_path)  # Keep as Path object
                             deployment_paths.add(deployment_path)
+                            debug_print(f"Added tfvars deployment: {file_path}")
                     elif file.endswith('.json'):
                         # JSON file changed - look for tfvars in same directory
                         deployment_dir = file_path.parent
                         tfvars_files = list(deployment_dir.glob("*.tfvars"))
+                        debug_print(f"Found {len(tfvars_files)} tfvars files in {deployment_dir}")
                         for tfvars_file in tfvars_files:
                             deployment_path = str(tfvars_file.parent)
                             if deployment_path not in deployment_paths:
                                 files.append(tfvars_file)  # Keep as Path object
                                 deployment_paths.add(deployment_path)
                                 debug_print(f"Found tfvars file {tfvars_file} for changed JSON {file}")
+                else:
+                    debug_print(f"File does not exist: {file_path}")
         else:
             # Find all tfvars files in Accounts directory
             accounts_dir = self.working_dir / "Accounts"

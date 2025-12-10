@@ -178,6 +178,134 @@ class EnhancedTerraformOrchestrator:
         
         return config
 
+    def find_deployments(self, changed_files=None, filters=None):
+        """Find deployments to process based on changed files or all tfvars"""
+        debug_print(f"find_deployments called with changed_files={changed_files}, filters={filters}")
+        
+        if changed_files:
+            print(f"📋 Processing {len(changed_files)} changed files")
+            seen_files = set()  # Track actual file paths, not parent directories
+            files = []
+            for file in changed_files:
+                # Skip workflow files
+                if file.startswith('.github/workflows/'):
+                    debug_print(f"Skipping workflow file: {file}")
+                    continue
+                
+                # Try both absolute path and relative to working_dir
+                file_path = Path(file)
+                if not file_path.is_absolute():
+                    file_path = self.working_dir / file
+                
+                debug_print(f"Checking file: {file} -> resolved to: {file_path} (exists: {file_path.exists()})")
+                
+                if file_path.exists():
+                    if file.endswith('.tfvars'):
+                        # Direct tfvars file - add if not already seen
+                        file_str = str(file_path)
+                        if file_str not in seen_files:
+                            files.append(file_path)
+                            seen_files.add(file_str)
+                            debug_print(f"Added tfvars deployment: {file_path}")
+                        else:
+                            debug_print(f"Skipping duplicate tfvars: {file_path}")
+                    elif file.endswith('.json'):
+                        # JSON file changed - look for tfvars in same directory
+                        deployment_dir = file_path.parent
+                        tfvars_files = list(deployment_dir.glob("*.tfvars"))
+                        debug_print(f"Found {len(tfvars_files)} tfvars files in {deployment_dir}")
+                        for tfvars_file in tfvars_files:
+                            file_str = str(tfvars_file)
+                            if file_str not in seen_files:
+                                files.append(tfvars_file)
+                                seen_files.add(file_str)
+                                debug_print(f"Found tfvars file {tfvars_file} for changed JSON {file}")
+                            else:
+                                debug_print(f"Skipping duplicate tfvars: {tfvars_file}")
+                else:
+                    debug_print(f"File does not exist: {file_path}")
+        else:
+            # Find all tfvars files in Accounts directory
+            accounts_dir = self.working_dir / "Accounts"
+            if accounts_dir.exists():
+                files = list(accounts_dir.glob("**/*.tfvars"))
+            else:
+                files = []
+        
+        deployments = []
+        for file in files:
+            deployment_info = self._analyze_deployment_file(file)
+            if deployment_info and self._matches_filters(deployment_info, filters):
+                deployments.append(deployment_info)
+        
+        return deployments
+
+    def _analyze_deployment_file(self, tfvars_file: Path) -> Optional[Dict]:
+        """Analyze tfvars file and extract deployment information - dynamic folder structure"""
+        try:
+            # Extract deployment info from any path structure dynamically
+            # Supports:
+            #   - any-folder/account-name/region/project/file.tfvars
+            #   - account-name/region/project/file.tfvars
+            #   - account-name/region/file.tfvars (project = parent folder)
+            #   - account-name/file.tfvars (region = parent folder, project = default)
+            path_parts = tfvars_file.parts
+            
+            # Get parent directory structure (dynamically extract from last 3-4 levels)
+            if len(path_parts) >= 4:  # At minimum: some-folder/account/region/project/file.tfvars
+                # Use last 3 directories before filename as account/region/project
+                project = path_parts[-2]      # Parent folder
+                region = path_parts[-3]       # Grandparent folder
+                account_name = path_parts[-4] # Great-grandparent folder
+            elif len(path_parts) == 3:  # account/region/file.tfvars
+                project = path_parts[-2]      # Use parent as project
+                region = path_parts[-2]       # Use parent as region too
+                account_name = path_parts[-3]
+            elif len(path_parts) == 2:  # account/file.tfvars
+                account_name = path_parts[-2]
+                region = path_parts[-2]       # Use parent as region
+                project = 'default'
+            else:
+                # Single file at root - use filename as identifier
+                account_name = tfvars_file.stem
+                region = 'default'
+                project = 'default'
+            
+            # Find account ID from accounts config
+            account_id = None
+            for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
+                if acc_info.get('account_name') == account_name:
+                    account_id = acc_id
+                    break
+            
+            if not account_id:
+                debug_print(f"No account config found for {account_name}, using as account_id")
+                account_id = account_name
+            
+            return {
+                'file': str(tfvars_file),
+                'account_id': account_id,
+                'account_name': account_name,
+                'region': region,
+                'project': project,
+                'deployment_dir': str(tfvars_file.parent),
+                'environment': self.accounts_config.get('accounts', {}).get(account_id, {}).get('environment', 'unknown')
+            }
+                    
+        except Exception as e:
+            debug_print(f"Error analyzing deployment file {tfvars_file}: {e}")
+            return None
+
+    def _matches_filters(self, deployment: Dict, filters: Optional[Dict]) -> bool:
+        """Check if deployment matches filter criteria"""
+        if not filters:
+            return True
+        
+        for key, value in filters.items():
+            if deployment.get(key) != value:
+                return False
+        return True
+
     def _detect_services_from_tfvars(self, tfvars_file: Path) -> List[str]:
         """Detect services from tfvars file content"""
         try:
@@ -941,50 +1069,7 @@ Please fix the errors and push to a new branch.
             import traceback
             debug_print(traceback.format_exc())
 
-    def find_deployments(self, changed_files=None, filters=None):
-        """Find deployments to process from changed files"""
-        debug_print(f"find_deployments called with changed_files={changed_files}, filters={filters}")
-        
-        if changed_files:
-            print(f"📋 Processing {len(changed_files)} changed files")
-            deployment_paths = set()
-            files = []
-            for file in changed_files:
-                file_path = Path(file)
-                if file_path.exists():
-                    if file.endswith('.tfvars'):
-                        # Direct tfvars file
-                        deployment_path = str(file_path.parent)
-                        if deployment_path not in deployment_paths:
-                            files.append(file_path)
-                            deployment_paths.add(deployment_path)
-                    elif file.endswith('.json'):
-                        # JSON file changed - look for tfvars in same directory
-                        deployment_dir = file_path.parent
-                        tfvars_files = list(deployment_dir.glob("*.tfvars"))
-                        for tfvars_file in tfvars_files:
-                            deployment_path = str(tfvars_file.parent)
-                            if deployment_path not in deployment_paths:
-                                files.append(tfvars_file)
-                                deployment_paths.add(deployment_path)
-                                debug_print(f"Found tfvars file {tfvars_file} for changed JSON {file}")
-        else:
-            # Find all tfvars files in Accounts directory
-            accounts_dir = self.working_dir / "Accounts"
-            if accounts_dir.exists():
-                files = list(accounts_dir.glob("**/*.tfvars"))
-            else:
-                files = []
-        
-        deployments = []
-        for file in files:
-            deployment_info = self._analyze_deployment_file(file)
-            if deployment_info and self._matches_filters(deployment_info, filters):
-                deployments.append(deployment_info)
-        
-        return deployments
-    
-    def _analyze_deployment_file(self, tfvars_file: Path) -> Optional[Dict]:
+    def _analyze_deployment_file_legacy(self, tfvars_file: Path) -> Optional[Dict]:
         """Analyze tfvars file and extract deployment information"""
         try:
             path_parts = tfvars_file.parts
