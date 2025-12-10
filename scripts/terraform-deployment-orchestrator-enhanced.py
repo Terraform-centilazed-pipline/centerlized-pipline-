@@ -307,13 +307,25 @@ class EnhancedTerraformOrchestrator:
             else:
                 environment = 'unknown'
             
+            # Calculate relative path from working_dir for cleaner reporting
+            try:
+                relative_path = tfvars_file.relative_to(self.working_dir)
+                deployment_dir_relative = relative_path.parent
+                debug_print(f"📁 Relative deployment path: {deployment_dir_relative}")
+            except ValueError:
+                # If can't calculate relative path, use the filename's parent
+                deployment_dir_relative = Path(*tfvars_file.parts[-3:]).parent if len(tfvars_file.parts) >= 3 else tfvars_file.parent
+                debug_print(f"📁 Using fallback deployment path: {deployment_dir_relative}")
+            
             return {
                 'file': str(tfvars_file),
+                'file_relative': str(relative_path) if 'relative_path' in locals() else tfvars_file.name,
                 'account_id': account_id,
                 'account_name': account_name,
                 'region': region,
                 'project': project,
                 'deployment_dir': str(tfvars_file.parent),
+                'deployment_dir_relative': str(deployment_dir_relative),
                 'environment': environment
             }
                     
