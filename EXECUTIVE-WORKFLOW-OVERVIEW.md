@@ -54,32 +54,33 @@ flowchart LR
 
 ## 3-Phase Workflow
 
-### Phase 1: VALIDATE (PR Created/Updated)
+### Phase 1: VALIDATE (PR Created/Updated) - Controller
 1. Developer pushes to feature branch
-2. System auto-creates PR
+2. dev-deployment auto-creates PR
 3. **Controller receives validate event**
 4. Checks out 3 repos (dev-deployment, OPA-Policies, tf-module)
 5. Runs: Terraform plan → OPA validation
 6. **Adds labels:** ✅ `opa-passed` + `ready-for-review` OR ❌ `opa-failed` + `blocked`
-7. Posts validation results to PR
+7. Posts validation results to PR comment
 
-### Phase 2: MERGE (PR Approved)
+### Phase 2: MERGE (PR Approved) - Dev Workflow
 1. Engineer reviews and approves PR
-2. **Controller receives merge event**
-3. Python script `handle_pr_merge.py` checks:
+2. **dev-deployment workflow handles merge** (NOT controller)
+3. Checks:
    - Has `opa-passed` label? ✅
-   - Has approvals? ✅
-4. **Auto-merges with audit trail:**
-   - Full commit message (PR details, approver, files, OPA status)
-   - Git history shows complete context
+   - Has approval? ✅
+4. **Auto-merges to environment branch:**
+   - Reads environment from controller's PR comment
+   - Maps to branch (dev/stage/prod)
+   - Squash merges with approval info
 
-### Phase 3: APPLY (PR Merged)
-1. PR merged to main branch
+### Phase 3: APPLY (PR Merged) - Controller
+1. PR merged to environment branch
 2. **Controller receives apply event**
 3. **Security gate:** Checks for `opa-passed` label
 4. If passed: Terraform apply to AWS
 5. If blocked: Deployment fails (no label = no deploy)
-6. Posts deployment results to PR
+6. Posts deployment results to PR comment
 
 ---
 
@@ -105,38 +106,48 @@ flowchart LR
 
 ## Enhanced Audit Trail
 
-**Dynamic Commit Messages (auto-generated):**
+**Controller PR Comments (auto-generated):**
 ```
-Merge PR #73: Update S3 bucket configuration
+## 🔍 Terraform Plan Results
 
-Author: @developer
-Approved by: @senior-engineer
+🔖 Environment: `development`
+📦 Account: test-4-poc-1
 
-Changed files (2):
-  - Accounts/prod/s3.tfvars
-  - Accounts/prod/policy.json
+✅ OPA Validation: PASSED
+📊 Terraform Plan: 2 to add, 0 to change, 0 to destroy
 
-OPA Validation: ✅ PASSED
-Workflow: https://github.com/.../actions/runs/123
-Merged at: 2025-12-10T10:45:23Z
+... plan output ...
+```
+
+**dev-deployment Merge Commits (auto-generated):**
+```
+Merge PR #73: Terraform: test-4-poc-1
+
+Approved by: @reviewer
+Environment: development
+Target: dev
+```
+
+**Controller Apply Comments:**
+```
+✅ Terraform Apply Successful
+
+Resources created: 2
+Deployment time: 3m 12s
 ```
 
 **Workflow Run Names:**
 ```
-🎯 Centralized Terraform Controller
-  ├─ 🚀 dev-deployment → validate (PR#73)   ✅ 2m 34s
-  ├─ 🚀 dev-deployment → merge (PR#73)      ✅ 45s  
-  └─ 🚀 dev-deployment → apply (PR#73)      ✅ 3m 12s
-```
+Controller (centerlized-pipline-):
+  ├─ [dev-deployment] validate → PR#73   ✅ 2m 34s
+  └─ [dev-deployment] apply → PR#73      ✅ 3m 12s
 
-**Complete Context Logged:**
-- Source repository
-- PR number and title
-- Author and approver
-- Changed files
-- OPA status
-- Workflow URL
-- Timestamp
+Dev Repo (dev-deployment):
+  ├─ Auto-Create PR                      ✅ 10s
+  ├─ Dispatch Validation                 ✅ 5s
+  ├─ Merge PR to Environment Branch      ✅ 15s
+  └─ Dispatch Apply                      ✅ 5s
+```
 
 ---
 
@@ -149,9 +160,8 @@ sequenceDiagram
     participant GHA as 🔔 GitHub Actions
     participant Ctrl as 🎯 Controller
     participant OPA as 🔍 OPA Engine
-    participant Python as 🐍 Merge Script
     
-    Note over Dev,Python: PHASE 1: VALIDATE
+    Note over Dev,OPA: PHASE 1: VALIDATE (Controller)
     Dev->>DevRepo: git push feature-branch
     DevRepo->>GHA: Auto-create PR
     GHA->>Ctrl: Dispatch validate event
@@ -162,23 +172,22 @@ sequenceDiagram
     Ctrl->>OPA: Validate plan
     OPA-->>Ctrl: Pass/Fail result
     Ctrl->>DevRepo: Add labels (opa-passed/failed)
-    Ctrl->>DevRepo: Comment with results
+    Ctrl->>DevRepo: Post plan + environment to PR comment
     
-    Note over Dev,Python: PHASE 2: MERGE
+    Note over Dev,OPA: PHASE 2: MERGE (dev-deployment workflow)
     Dev->>DevRepo: Approve PR
-    GHA->>Ctrl: Dispatch merge event
-    Note right of Ctrl: PR: 73<br/>action: merge<br/>approver: username
-    Ctrl->>DevRepo: Read OPA labels
-    Ctrl->>Python: handle_pr_merge.py
-    Python->>Python: Check approvals
-    Python->>DevRepo: Merge with audit trail
-    Note right of DevRepo: Commit includes:<br/>- PR details<br/>- Approver<br/>- Files changed<br/>- OPA status
+    DevRepo->>DevRepo: Check opa-passed label
+    DevRepo->>DevRepo: Read environment from PR comment
+    DevRepo->>DevRepo: Map environment → branch
+    Note right of DevRepo: development → dev<br/>staging → stage<br/>production → prod
+    DevRepo->>DevRepo: Squash merge to target branch
+    Note right of DevRepo: Commit includes:<br/>- Approver<br/>- Environment<br/>- Target branch
     
-    Note over Dev,Python: PHASE 3: APPLY
-    DevRepo->>GHA: PR merged to main
+    Note over Dev,OPA: PHASE 3: APPLY (Controller)
+    DevRepo->>GHA: PR merged to env branch
     GHA->>Ctrl: Dispatch apply event
     Note right of Ctrl: PR: 73<br/>action: apply<br/>merge_sha: abc123
-    Ctrl->>DevRepo: Check opa-passed label
+    Ctrl->>DevRepo: Verify opa-passed label exists
     Ctrl->>Ctrl: terraform apply
     Ctrl->>DevRepo: Comment: Applied successfully
 ```
@@ -236,17 +245,24 @@ stateDiagram-v2
 
 ## Key Components
 
-**GitHub Workflows:**
-- `.github/workflows/dispatch-to-controller.yml` - Sends events to controller
-- `.github/workflows/centralized-controller.yml` - Handles validate/merge/apply
+**Controller Workflows (centerlized-pipline-):**
+- `.github/workflows/centralized-controller.yml` - Handles **validate** and **apply** only
+  - Listens for: `terraform_pr` (validate), `terraform_apply` (apply)
+  - Does NOT handle merge
 
-**Python Scripts:**
-- `handle_pr_merge.py` - Smart merge logic with approval checks
+**Dev Workflows (dev-deployment):**
+- `.github/workflows/dispatch-to-controller.yml` - Handles full PR lifecycle
+  - Job 1: Auto-create PR on push
+  - Job 2: Dispatch validate to controller
+  - Job 3: **Merge PR** (reads OPA labels, merges to env branch)
+  - Job 4: Dispatch apply to controller
+
+**Python Scripts (controller):**
 - `opa-validator.py` - Security validation
 - `terraform-deployment-orchestrator-enhanced.py` - Deployment execution
+- ~~`handle_pr_merge.py`~~ - NOT USED (merge handled by dev workflow)
 
 **Configuration:**
-- `config/special-approvers.yaml` - Senior engineers who can override
 - `accounts.yaml` - AWS account mappings
 - `deployment-rules.yaml` - Deployment policies
 
@@ -255,22 +271,20 @@ stateDiagram-v2
 ## Security Layers
 
 **4-Level Protection:**
-1. **OPA Validation** - Automated policy checks (can't bypass)
-2. **Label System** - Cached results prevent unauthorized changes
-3. **Human Approval** - Required before merge
-4. **Security Gate** - Apply blocked without `opa-passed` label
+1. **OPA Validation (Controller)** - Automated policy checks during validate phase
+2. **Label System** - Controller adds labels, dev workflow reads them
+3. **Human Approval** - Required before dev workflow merges
+4. **Security Gate (Controller)** - Apply blocked without `opa-passed` label
 
-**Special Override (Emergency Only):**
-- Senior approvers defined in `special-approvers.yaml`
-- Can approve with `OVERRIDE` comment
-- Requires `opa-failed` + special approver approval
-- Adds `opa-override` label for audit
+**Merge Responsibility:**
+- **Controller**: Does NOT merge PRs
+- **dev-deployment workflow**: Handles merge after checking OPA labels
 
 **Complete Audit:**
-- Git history (commit messages with full details)
-- PR comments (validation results)
-- Workflow logs (execution details)
-- Labels (approval status visible)
+- Git history (commit messages with approval info)
+- PR comments (validation results from controller)
+- Workflow logs (execution details in both repos)
+- Labels (OPA status visible, set by controller)
 
 ---
 
@@ -403,16 +417,19 @@ git push
 
 **Key innovations:**
 - **4 repos working together** (configs, controller, policies, modules)
+- **Controller handles validate + apply only** - Merge done by dev workflow
 - **OPA runs once** - Results cached in labels
-- **Dynamic commit messages** - Full context in Git history
-- **Smart merge handler** - Python script with approval logic
-- **Enhanced logging** - Clear workflow names and details
+- **Environment-based branching** - Auto-merge to dev/stage/prod branches
+- **Label-based security gates** - Controller sets labels, dev workflow reads them
+- **Enhanced logging** - Clear workflow names and details in both repos
 
 **Production-ready features:**
+- Controller focuses on infrastructure (validate + apply)
+- Dev workflow handles Git operations (PR create + merge)
 - Saves ~140 hours/month
 - 100% policy compliance
 - Zero manual errors
-- Emergency override capability
+- Environment-aware deployments (dev/stage/prod)
 - Complete traceability
 
 **Status:** Ready for production use
