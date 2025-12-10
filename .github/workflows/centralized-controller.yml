@@ -1070,42 +1070,86 @@ jobs:
         run: |
           python scripts/handle_pr_merge.py
 
-      # ===== STEP 7: TRIGGER TERRAFORM APPLY (after successful merge) =====
-      - name: 🚀 Trigger Terraform Apply
-        if: steps.merge.outputs.merged == 'true'
+      # ===== STEP 7: MERGE COMPLETE - Dev workflow will trigger apply =====
+      # Note: After successful merge, GitHub triggers the dev repo's dispatch-apply job
+      # which will dispatch action='apply' to this controller. No duplicate dispatch needed here.
+
+      # ===== SECURITY GATE: Validate OPA Status Before Apply =====
+      - name: 🔒 Security Gate - Validate OPA Passed
+        if: github.event.client_payload.action == 'apply'
+        id: validate-opa
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            console.log('🚀 Triggering Terraform Apply workflow...');
+            const owner = '${{ github.event.client_payload.source_owner }}';
+            const repo = '${{ github.event.client_payload.source_repo }}';
+            const pr_number = ${{ github.event.client_payload.pr_number }};
             
-            // Get the changed files from the original payload
-            const changedFiles = '${{ github.event.client_payload.changed_files || github.event.client_payload.files }}';
-            console.log('📁 Changed files:', changedFiles);
+            console.log('🔒 SECURITY GATE: Validating OPA status before apply');
+            console.log(`📦 Checking PR #${pr_number} in ${owner}/${repo}`);
             
-            // Dispatch apply event to this same workflow
-            await github.rest.repos.createDispatchEvent({
-              owner: 'Terraform-centilazed-pipline',
-              repo: 'centerlized-pipline-',
-              event_type: 'terraform_apply',
-              client_payload: {
-                source_owner: '${{ github.event.client_payload.source_owner }}',
-                source_repo: '${{ github.event.client_payload.source_repo }}',
-                pr_number: ${{ github.event.client_payload.pr_number }},
-                pr_url: '${{ github.event.client_payload.pr_url }}',
-                pr_author: '${{ github.event.client_payload.pr_author || github.event.client_payload.triggered_by }}',
-                merge_commit_sha: '${{ steps.merge.outputs.merge_sha }}',
-                changed_files: changedFiles,
-                action: 'apply',
-                merged: 'true'
-              }
+            // Get PR details and labels
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pr_number
             });
             
-            console.log('✅ Apply workflow triggered');
+            const labels = pr.labels.map(l => l.name);
+            const hasOpaPassed = labels.includes('opa-passed');
+            
+            console.log(`🏷️  PR Labels: ${labels.join(', ')}`);
+            console.log(`✅ OPA Passed Label: ${hasOpaPassed ? 'FOUND' : 'MISSING'}`);
+            
+            if (!hasOpaPassed) {
+              console.log('🚫 SECURITY GATE FAILED - Missing opa-passed label');
+              console.log('❌ APPLY BLOCKED - OPA validation must pass before deployment');
+              
+              // Post blocking comment to PR
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr_number,
+                body: `## 🚫 Security Gate: Apply Blocked\n\n` +
+                      `**Critical Security Violation Detected**\n\n` +
+                      `❌ **Missing \`opa-passed\` label**\n\n` +
+                      `This PR was merged but **Terraform Apply is BLOCKED** by the centralized controller because:\n\n` +
+                      `- OPA (Open Policy Agent) validation did not pass\n` +
+                      `- OR the \`opa-passed\` label was removed after merge\n\n` +
+                      `### 🛡️ Why This Matters\n\n` +
+                      `The centralized controller enforces strict policy compliance. Without OPA validation:\n` +
+                      `- Security policies may be violated\n` +
+                      `- Compliance requirements not met\n` +
+                      `- Infrastructure drift or misconfigurations possible\n\n` +
+                      `### ✅ How to Fix\n\n` +
+                      `1. **Revert the merge** if OPA validation truly failed\n` +
+                      `2. **Fix policy violations** in a new PR\n` +
+                      `3. **Ensure OPA passes** before merging\n` +
+                      `4. **Contact admins** if you believe this is an error\n\n` +
+                      `---\n` +
+                      `🤖 *Centralized Controller Security Gate - This deployment has been blocked to protect infrastructure*`
+              });
+              
+              // Close the PR with a failure comment
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pr_number,
+                state: 'closed'
+              });
+              
+              core.setFailed('🚫 SECURITY GATE: Apply blocked - Missing opa-passed label');
+              return;
+            }
+            
+            console.log('✅ Security gate passed - OPA validation confirmed');
+            console.log('🚀 Proceeding with Terraform Apply');
+            core.setOutput('proceed', 'true');
 
       # ===== TERRAFORM APPLY (when action == 'apply') =====
       - name: 🚀 Terraform Apply
-        if: github.event.client_payload.action == 'apply' && (steps.discover.outputs.has_deployments == 'true' || steps.discover-apply.outputs.has_deployments == 'true')
+        if: github.event.client_payload.action == 'apply' && steps.validate-opa.outputs.proceed == 'true' && (steps.discover.outputs.has_deployments == 'true' || steps.discover-apply.outputs.has_deployments == 'true')
         id: apply
         working-directory: source-repo
         env:
@@ -1168,7 +1212,7 @@ jobs:
           fi
 
       - name: 💬 Post Apply Results to PR
-        if: github.event.client_payload.action == 'apply' && always() && (steps.discover.outputs.has_deployments == 'true' || steps.discover-apply.outputs.has_deployments == 'true')
+        if: github.event.client_payload.action == 'apply' && steps.validate-opa.outputs.proceed == 'true' && always() && (steps.discover.outputs.has_deployments == 'true' || steps.discover-apply.outputs.has_deployments == 'true')
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
