@@ -241,46 +241,71 @@ class EnhancedTerraformOrchestrator:
         return deployments
 
     def _analyze_deployment_file(self, tfvars_file: Path) -> Optional[Dict]:
-        """Analyze tfvars file and extract deployment information - dynamic folder structure"""
+        """Analyze tfvars file and extract deployment information - reads account_name from tfvars content"""
         try:
-            # Extract deployment info from any path structure dynamically
-            # Supports:
-            #   - any-folder/account-name/region/project/file.tfvars
-            #   - account-name/region/project/file.tfvars
-            #   - account-name/region/file.tfvars (project = parent folder)
-            #   - account-name/file.tfvars (region = parent folder, project = default)
-            path_parts = tfvars_file.parts
+            # Read tfvars content to extract actual account_name
+            content = tfvars_file.read_text()
             
-            # Get parent directory structure (dynamically extract from last 3-4 levels)
-            if len(path_parts) >= 4:  # At minimum: some-folder/account/region/project/file.tfvars
-                # Use last 3 directories before filename as account/region/project
-                project = path_parts[-2]      # Parent folder
-                region = path_parts[-3]       # Grandparent folder
-                account_name = path_parts[-4] # Great-grandparent folder
-            elif len(path_parts) == 3:  # account/region/file.tfvars
-                project = path_parts[-2]      # Use parent as project
-                region = path_parts[-2]       # Use parent as region too
-                account_name = path_parts[-3]
-            elif len(path_parts) == 2:  # account/file.tfvars
-                account_name = path_parts[-2]
-                region = path_parts[-2]       # Use parent as region
-                project = 'default'
+            # Extract account_name from tfvars content: account_name = "arj-wkld-a-prd"
+            account_name_match = re.search(r'account_name\s*=\s*"([^"]+)"', content)
+            if account_name_match:
+                account_name = account_name_match.group(1)
+                debug_print(f"✅ Extracted account_name from tfvars: {account_name}")
             else:
-                # Single file at root - use filename as identifier
-                account_name = tfvars_file.stem
-                region = 'default'
-                project = 'default'
+                # Fallback: use folder structure
+                path_parts = tfvars_file.parts
+                if len(path_parts) >= 4:
+                    account_name = path_parts[-4]
+                elif len(path_parts) >= 3:
+                    account_name = path_parts[-3]
+                elif len(path_parts) >= 2:
+                    account_name = path_parts[-2]
+                else:
+                    account_name = tfvars_file.stem
+                debug_print(f"⚠️  No account_name in tfvars, using folder: {account_name}")
             
-            # Find account ID from accounts config
-            account_id = None
-            for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
-                if acc_info.get('account_name') == account_name:
-                    account_id = acc_id
-                    break
+            # Extract region from tfvars or use folder structure
+            region_match = re.search(r'regions\s*=\s*\["([^"]+)"\]', content)
+            if region_match:
+                region = region_match.group(1)
+                debug_print(f"✅ Extracted region from tfvars: {region}")
+            else:
+                # Fallback: use folder structure
+                path_parts = tfvars_file.parts
+                if len(path_parts) >= 3:
+                    region = path_parts[-3]
+                elif len(path_parts) >= 2:
+                    region = path_parts[-2]
+                else:
+                    region = 'us-east-1'
+                debug_print(f"⚠️  No region in tfvars, using folder/default: {region}")
             
-            if not account_id:
-                debug_print(f"No account config found for {account_name}, using as account_id")
-                account_id = account_name
+            # Extract account_id from tfvars content
+            account_id_match = re.search(r'account_id\s*=\s*"([^"]+)"', content)
+            if account_id_match:
+                account_id = account_id_match.group(1)
+                debug_print(f"✅ Extracted account_id from tfvars: {account_id}")
+            else:
+                # Try to find from accounts block
+                accounts_match = re.search(r'accounts\s*=\s*\{[^}]*"(\d+)"\s*=\s*\{', content)
+                if accounts_match:
+                    account_id = accounts_match.group(1)
+                    debug_print(f"✅ Extracted account_id from accounts block: {account_id}")
+                else:
+                    # Fallback: use account_name
+                    account_id = account_name
+                    debug_print(f"⚠️  No account_id found, using account_name: {account_id}")
+            
+            # Project from folder structure (parent folder)
+            path_parts = tfvars_file.parts
+            project = path_parts[-2] if len(path_parts) >= 2 else 'default'
+            
+            # Extract environment from tfvars
+            env_match = re.search(r'environment\s*=\s*"([^"]+)"', content)
+            if env_match:
+                environment = env_match.group(1)
+            else:
+                environment = 'unknown'
             
             return {
                 'file': str(tfvars_file),
@@ -289,11 +314,13 @@ class EnhancedTerraformOrchestrator:
                 'region': region,
                 'project': project,
                 'deployment_dir': str(tfvars_file.parent),
-                'environment': self.accounts_config.get('accounts', {}).get(account_id, {}).get('environment', 'unknown')
+                'environment': environment
             }
                     
         except Exception as e:
             debug_print(f"Error analyzing deployment file {tfvars_file}: {e}")
+            import traceback
+            debug_print(traceback.format_exc())
             return None
 
     def _matches_filters(self, deployment: Dict, filters: Optional[Dict]) -> bool:
@@ -759,24 +786,37 @@ Please fix the errors and push to a new branch.
             backend_key = self._generate_dynamic_backend_key(deployment, services, tfvars_file)
             
             # Copy required files to working directory
+            # Use deployment-specific directory to avoid race conditions in parallel execution
             main_dir = self.project_root
-            terraform_dir = main_dir / ".terraform"
+            deployment_name = f"{deployment['account_name']}-{deployment['project']}"
+            
+            # Create deployment-specific workspace
+            deployment_workspace = main_dir / f".terraform-workspace-{deployment_name}"
+            deployment_workspace.mkdir(exist_ok=True)
+            
+            # Clean terraform directory in workspace
+            terraform_dir = deployment_workspace / ".terraform"
             if terraform_dir.exists():
                 shutil.rmtree(terraform_dir)
             
-            tfvars_dest = main_dir / "terraform.tfvars"
+            tfvars_dest = deployment_workspace / "terraform.tfvars"
             shutil.copy2(tfvars_file, tfvars_dest)
             debug_print(f"Copied {tfvars_file} -> {tfvars_dest}")
             
             # Copy policy JSON files referenced in tfvars (if any)
             try:
                 debug_print(f"About to call _copy_referenced_policy_files")
-                self._copy_referenced_policy_files(tfvars_file, main_dir, deployment)
+                self._copy_referenced_policy_files(tfvars_file, deployment_workspace, deployment)
                 debug_print(f"Finished calling _copy_referenced_policy_files")
             except Exception as copy_err:
                 print(f"⚠️ Exception in _copy_referenced_policy_files: {copy_err}")
                 import traceback
                 traceback.print_exc()
+            
+            # Copy main.tf and other terraform files to workspace
+            for tf_file in main_dir.glob("*.tf"):
+                shutil.copy2(tf_file, deployment_workspace / tf_file.name)
+                debug_print(f"Copied {tf_file.name} to workspace")
             
             # Initialize Terraform with dynamic backend
             init_cmd = [
@@ -788,7 +828,7 @@ Please fix the errors and push to a new branch.
             print(f"🔄 Initializing Terraform with backend key: {backend_key}")
             print(f"🔒 State locking enabled via Terraform built-in lockfile (use_lockfile=true)")
             
-            init_result = self._run_terraform_command(init_cmd, main_dir)
+            init_result = self._run_terraform_command(init_cmd, deployment_workspace)
             if init_result['returncode'] != 0:
                 error_msg = f"Terraform init failed: {init_result.get('stderr', init_result['output'])}"
                 return {
@@ -817,7 +857,7 @@ Please fix the errors and push to a new branch.
             if action == "plan":
                 # Save plan to file for JSON conversion
                 plan_filename = f"{deployment['account_name']}-{deployment['project']}.tfplan"
-                plan_file = main_dir / plan_filename
+                plan_file = deployment_workspace / plan_filename
                 cmd = ['plan', '-detailed-exitcode', '-input=false', '-var-file=terraform.tfvars', '-no-color', f'-out={plan_filename}']
                 print(f"📋 Running terraform plan...")
             elif action == "apply":
@@ -826,7 +866,7 @@ Please fix the errors and push to a new branch.
             else:
                 cmd = [action, '-input=false', '-var-file=terraform.tfvars', '-no-color']
             
-            result = self._run_terraform_command(cmd, main_dir)
+            result = self._run_terraform_command(cmd, deployment_workspace)
             
             # ROLLBACK ON APPLY FAILURE
             if action == "apply" and result['returncode'] != 0:
@@ -863,7 +903,7 @@ Please fix the errors and push to a new branch.
                     json_file = json_dir / json_filename
                     
                     # IMPORTANT: Use full path to plan file (not just filename)
-                    show_result = self._run_terraform_command(['show', '-json', str(plan_file)], main_dir)
+                    show_result = self._run_terraform_command(['show', '-json', str(plan_file)], deployment_workspace)
                     if show_result['returncode'] == 0:
                         with open(json_file, 'w') as f:
                             f.write(show_result['stdout'])
@@ -896,7 +936,7 @@ Please fix the errors and push to a new branch.
                     markdown_filename = f"{deployment['account_name']}-{deployment['project']}.md"
                     markdown_file = markdown_dir / markdown_filename
                     
-                    show_md_result = self._run_terraform_command(['show', plan_filename], main_dir)
+                    show_md_result = self._run_terraform_command(['show', plan_filename], deployment_workspace)
                     if show_md_result['returncode'] == 0:
                         with open(markdown_file, 'w') as f:
                             f.write(f"## Terraform Plan: {deployment['account_name']}/{deployment['project']}\n\n")
@@ -1069,108 +1109,7 @@ Please fix the errors and push to a new branch.
             import traceback
             debug_print(traceback.format_exc())
 
-    def _analyze_deployment_file_legacy(self, tfvars_file: Path) -> Optional[Dict]:
-        """Analyze tfvars file and extract deployment information"""
-        try:
-            path_parts = tfvars_file.parts
-            
-            if "Accounts" in path_parts:
-                accounts_index = path_parts.index("Accounts")
-                
-                # Full structure: Accounts/account-name/region/project/file.tfvars
-                if len(path_parts) > accounts_index + 3:
-                    account_name = path_parts[accounts_index + 1]
-                    region = path_parts[accounts_index + 2]
-                    project = path_parts[accounts_index + 3]
-                    
-                    account_id = None
-                    for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
-                        if acc_info.get('account_name') == account_name:
-                            account_id = acc_id
-                            break
-                    
-                    if account_id:
-                        return {
-                            'file': str(tfvars_file),
-                            'account_id': account_id,
-                            'account_name': account_name,
-                            'region': region,
-                            'project': project,
-                            'deployment_dir': str(tfvars_file.parent),
-                            'environment': self.accounts_config['accounts'][account_id].get('environment', 'unknown')
-                        }
-                
-                # Simple structure: Accounts/project-name/file.tfvars
-                elif len(path_parts) > accounts_index + 1:
-                    project = path_parts[accounts_index + 1]
-                    region = "us-east-1"
-                    
-                    # Extract real account_name from tfvars content
-                    account_name = self._extract_account_name_from_tfvars(tfvars_file)
-                    
-                    # If not found in tfvars, try accounts config
-                    if not account_name:
-                        account_id = None
-                        for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
-                            if acc_info.get('account_name') == project:
-                                account_id = acc_id
-                                account_name = acc_info.get('account_name')
-                                region = acc_info.get('region', region)
-                                break
-                        
-                        if not account_name:
-                            account_name = project
-                            account_id = project
-                            debug_print(f"No account config found for {project}, using project name as account")
-                    else:
-                        # Find account_id from account_name
-                        account_id = None
-                        for acc_id, acc_info in self.accounts_config.get('accounts', {}).items():
-                            if acc_info.get('account_name') == account_name:
-                                account_id = acc_id
-                                region = acc_info.get('region', region)
-                                break
-                        
-                        if not account_id:
-                            account_id = account_name
-                            debug_print(f"No account_id found for {account_name}, using account_name")
-                    
-                    return {
-                        'file': str(tfvars_file),
-                        'account_id': account_id,
-                        'account_name': account_name,
-                        'region': region,
-                        'project': tfvars_file.stem,
-                        'deployment_dir': str(tfvars_file.parent),
-                        'environment': self.accounts_config.get('accounts', {}).get(account_id, {}).get('environment', 'poc')
-                    }
-                    
-        except Exception as e:
-            debug_print(f"Error analyzing {tfvars_file}: {e}")
-        
-        return None
-    
-    def _extract_account_name_from_tfvars(self, tfvars_file: Path) -> Optional[str]:
-        """Extract the real account_name from tfvars file content"""
-        try:
-            content = tfvars_file.read_text()
-            match = re.search(r'account_name\s*=\s*"([^"]+)"', content)
-            if match:
-                return match.group(1)
-            return None
-        except Exception as e:
-            debug_print(f"Error extracting account name from {tfvars_file}: {e}")
-            return None
-    
-    def _matches_filters(self, deployment_info: Dict, filters: Optional[Dict]) -> bool:
-        """Check if deployment matches provided filters"""
-        if not filters:
-            return True
-            
-        for key, value in filters.items():
-            if key in deployment_info and deployment_info[key] != value:
-                return False
-        return True
+
     
     def execute_deployments(self, deployments: List[Dict], action: str = "plan") -> Dict:
         """Execute terraform deployments - PARALLEL processing with thread pool"""
