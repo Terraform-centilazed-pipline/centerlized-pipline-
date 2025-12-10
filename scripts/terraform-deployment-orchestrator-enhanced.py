@@ -307,6 +307,43 @@ class EnhancedTerraformOrchestrator:
             else:
                 environment = 'unknown'
             
+            # Extract Owner from tags
+            owner = 'N/A'
+            owner_match = re.search(r'Owner\s*=\s*"([^"]+)"', content)
+            if owner_match:
+                owner = owner_match.group(1)
+                debug_print(f"✅ Extracted Owner from tags: {owner}")
+            
+            # Extract Team/Group from tags
+            team = 'N/A'
+            team_match = re.search(r'Team\s*=\s*"([^"]+)"', content)
+            if not team_match:
+                team_match = re.search(r'Group\s*=\s*"([^"]+)"', content)
+            if team_match:
+                team = team_match.group(1)
+                debug_print(f"✅ Extracted Team/Group from tags: {team}")
+            
+            # Extract resource names (s3_buckets, kms_keys, iam_roles, etc.)
+            resources = []
+            resource_patterns = [
+                (r's3_buckets\s*=\s*\{[^}]*"([^"]+)"', 'S3'),
+                (r'kms_keys\s*=\s*\{[^}]*"([^"]+)"', 'KMS'),
+                (r'iam_roles\s*=\s*\{[^}]*"([^"]+)"', 'IAM Role'),
+                (r'iam_policies\s*=\s*\{[^}]*"([^"]+)"', 'IAM Policy'),
+                (r'lambda_functions\s*=\s*\{[^}]*"([^"]+)"', 'Lambda')
+            ]
+            
+            for pattern, resource_type in resource_patterns:
+                matches = re.finditer(pattern, content)
+                for match in matches:
+                    resource_name = match.group(1)
+                    resources.append(f"{resource_type}: {resource_name}")
+                    debug_print(f"✅ Found resource: {resource_type} - {resource_name}")
+            
+            resources_str = ', '.join(resources[:5]) if resources else 'N/A'  # Limit to first 5
+            if len(resources) > 5:
+                resources_str += f' (+{len(resources) - 5} more)'
+            
             # Calculate relative path from working_dir for cleaner reporting
             try:
                 relative_path = tfvars_file.relative_to(self.working_dir)
@@ -326,7 +363,10 @@ class EnhancedTerraformOrchestrator:
                 'project': project,
                 'deployment_dir': str(tfvars_file.parent),
                 'deployment_dir_relative': str(deployment_dir_relative),
-                'environment': environment
+                'environment': environment,
+                'owner': owner,
+                'team': team,
+                'resources': resources_str
             }
                     
         except Exception as e:

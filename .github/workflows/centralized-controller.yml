@@ -844,12 +844,24 @@ jobs:
                     const commitInfo = '${{ github.event.client_payload.commit_info }}' || '';
                     const [commitAuthor, commitMessage] = commitInfo.split('|');
                     
-                    comment += `<tr><td><b>🏗️ Services</b></td><td>${services}</td></tr>\n`;
-                    comment += `<tr><td><b>🌍 Environment</b></td><td>${dep.environment || 'N/A'}</td></tr>\n`;
+                    comment += `<tr><td><b>🏗️ Service Type</b></td><td>${services}</td></tr>\n`;
+                    comment += `<tr><td><b>📦 Resources</b></td><td>${dep.resources || 'N/A'}</td></tr>\n`;
+                    comment += `<tr><td><b>🏢 Account</b></td><td>${dep.account_name} <code>(${dep.account_id})</code></td></tr>\n`;
+                    comment += `<tr><td><b>🌍 Region</b></td><td>${dep.region || 'N/A'}</td></tr>\n`;
+                    comment += `<tr><td><b>🔖 Environment</b></td><td>${dep.environment || 'N/A'}</td></tr>\n`;
+                    comment += `<tr><td><b>👤 Owner</b></td><td>${dep.owner || 'N/A'}</td></tr>\n`;
+                    comment += `<tr><td><b>👥 Team/Group</b></td><td>${dep.team || 'N/A'}</td></tr>\n`;
                     comment += `<tr><td><b>📁 Deployment Path</b></td><td><code>${dep.deployment_dir_relative || dep.deployment_dir || 'N/A'}</code></td></tr>\n`;
-                    comment += `<tr><td><b>👤 Commit Author</b></td><td>${commitAuthor || '${{ github.event.client_payload.pr_author }}'}</td></tr>\n`;
+                    comment += `<tr><td><b>✍️ Commit Author</b></td><td>${commitAuthor || '${{ github.event.client_payload.pr_author }}'}</td></tr>\n`;
                     comment += `<tr><td><b>📝 Commit SHA</b></td><td><code>${'${{ github.event.client_payload.pr_head_sha }}'.substring(0, 7)}</code></td></tr>\n`;
                     comment += `<tr><td><b>💬 Commit Message</b></td><td>${commitMessage || 'N/A'}</td></tr>\n`;
+                    
+                    // Add approver info if available (only shown in apply mode)
+                    const approver = '${{ github.event.client_payload.approver }}';
+                    if (approver && approver !== '') {
+                      comment += `<tr><td><b>✅ Approved By</b></td><td>@${approver}</td></tr>\n`;
+                    }
+                    
                     comment += `</table>\n\n`;
                     
                     // DEEP Parse terraform output for resource changes
