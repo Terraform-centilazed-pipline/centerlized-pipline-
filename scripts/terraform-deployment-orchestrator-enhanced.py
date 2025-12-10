@@ -792,12 +792,14 @@ Please fix the errors and push to a new branch.
             
             # Create deployment-specific workspace
             deployment_workspace = main_dir / f".terraform-workspace-{deployment_name}"
-            deployment_workspace.mkdir(exist_ok=True)
             
-            # Clean terraform directory in workspace
-            terraform_dir = deployment_workspace / ".terraform"
-            if terraform_dir.exists():
-                shutil.rmtree(terraform_dir)
+            # Always clean and recreate workspace to avoid lock file conflicts
+            if deployment_workspace.exists():
+                shutil.rmtree(deployment_workspace)
+                debug_print(f"Cleaned existing workspace: {deployment_workspace}")
+            
+            deployment_workspace.mkdir(exist_ok=True)
+            debug_print(f"Created fresh workspace: {deployment_workspace}")
             
             tfvars_dest = deployment_workspace / "terraform.tfvars"
             shutil.copy2(tfvars_file, tfvars_dest)
