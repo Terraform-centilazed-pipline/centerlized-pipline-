@@ -140,6 +140,85 @@ Merged at: 2025-12-10T10:45:23Z
 
 ---
 
+## Data Flow Details
+
+```mermaid
+sequenceDiagram
+    participant Dev as 👨‍💻 Developer
+    participant DevRepo as 📦 dev-deployment
+    participant GHA as 🔔 GitHub Actions
+    participant Ctrl as 🎯 Controller
+    participant OPA as 🔍 OPA Engine
+    participant Python as 🐍 Merge Script
+    
+    Note over Dev,Python: PHASE 1: VALIDATE
+    Dev->>DevRepo: git push feature-branch
+    DevRepo->>GHA: Auto-create PR
+    GHA->>Ctrl: Dispatch validate event
+    Note right of Ctrl: repo: dev-deployment<br/>PR: 73<br/>action: validate
+    Ctrl->>Ctrl: Checkout 3 repos
+    Note right of Ctrl: - dev-deployment<br/>- OPA-Policies<br/>- tf-module
+    Ctrl->>Ctrl: terraform init + plan
+    Ctrl->>OPA: Validate plan
+    OPA-->>Ctrl: Pass/Fail result
+    Ctrl->>DevRepo: Add labels (opa-passed/failed)
+    Ctrl->>DevRepo: Comment with results
+    
+    Note over Dev,Python: PHASE 2: MERGE
+    Dev->>DevRepo: Approve PR
+    GHA->>Ctrl: Dispatch merge event
+    Note right of Ctrl: PR: 73<br/>action: merge<br/>approver: username
+    Ctrl->>DevRepo: Read OPA labels
+    Ctrl->>Python: handle_pr_merge.py
+    Python->>Python: Check approvals
+    Python->>DevRepo: Merge with audit trail
+    Note right of DevRepo: Commit includes:<br/>- PR details<br/>- Approver<br/>- Files changed<br/>- OPA status
+    
+    Note over Dev,Python: PHASE 3: APPLY
+    DevRepo->>GHA: PR merged to main
+    GHA->>Ctrl: Dispatch apply event
+    Note right of Ctrl: PR: 73<br/>action: apply<br/>merge_sha: abc123
+    Ctrl->>DevRepo: Check opa-passed label
+    Ctrl->>Ctrl: terraform apply
+    Ctrl->>DevRepo: Comment: Applied successfully
+```
+
+---
+
+## Label-Based Flow
+
+```mermaid
+stateDiagram-v2
+    [*] --> PR_Created: Push to feature branch
+    
+    PR_Created --> OPA_Running: Dispatch validate
+    
+    OPA_Running --> OPA_Passed: ✅ Validation successful
+    OPA_Running --> OPA_Failed: ❌ Validation failed
+    
+    OPA_Passed --> Waiting_Approval: Add opa-passed label
+    OPA_Failed --> Blocked: Add opa-failed label
+    
+    Waiting_Approval --> Ready_Merge: PR approved
+    Blocked --> Special_Review: Special approver needed
+    
+    Ready_Merge --> Merged: Python merges PR
+    Special_Review --> Override_Merge: Override approved
+    Special_Review --> Permanently_Blocked: No override
+    
+    Merged --> Security_Gate: Dispatch apply
+    Override_Merge --> Security_Gate: Dispatch apply
+    
+    Security_Gate --> Applying: opa-passed label found
+    Security_Gate --> Apply_Blocked: No opa-passed label
+    
+    Applying --> [*]: Infrastructure updated
+    Apply_Blocked --> [*]: Apply failed
+    Permanently_Blocked --> [*]: Merge blocked
+```
+
+---
+
 ## Why 4 Repositories?
 
 **Separation of ownership:**
