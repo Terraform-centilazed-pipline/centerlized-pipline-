@@ -326,15 +326,15 @@ class EnhancedTerraformOrchestrator:
             # Extract resource names (s3_buckets, kms_keys, iam_roles, etc.)
             resources = []
             resource_patterns = [
-                (r's3_buckets\s*=\s*\{[^}]*"([^"]+)"', 'S3'),
-                (r'kms_keys\s*=\s*\{[^}]*"([^"]+)"', 'KMS'),
-                (r'iam_roles\s*=\s*\{[^}]*"([^"]+)"', 'IAM Role'),
-                (r'iam_policies\s*=\s*\{[^}]*"([^"]+)"', 'IAM Policy'),
-                (r'lambda_functions\s*=\s*\{[^}]*"([^"]+)"', 'Lambda')
+                (r's3_buckets\s*=\s*\{\s*"([^"]+)"\s*=', 'S3'),  # Match: s3_buckets = { "bucket-name" =
+                (r'kms_keys\s*=\s*\{\s*"([^"]+)"\s*=', 'KMS'),   # Match: kms_keys = { "key-name" =
+                (r'iam_roles\s*=\s*\{\s*"([^"]+)"\s*=', 'IAM Role'),  # Match: iam_roles = { "role-name" =
+                (r'iam_policies\s*=\s*\{\s*"([^"]+)"\s*=', 'IAM Policy'),  # Match: iam_policies = { "policy-name" =
+                (r'lambda_functions\s*=\s*\{\s*"([^"]+)"\s*=', 'Lambda')  # Match: lambda_functions = { "function-name" =
             ]
             
             for pattern, resource_type in resource_patterns:
-                matches = re.finditer(pattern, content)
+                matches = re.finditer(pattern, content, re.MULTILINE)
                 for match in matches:
                     resource_name = match.group(1)
                     resources.append(f"{resource_type}: {resource_name}")
