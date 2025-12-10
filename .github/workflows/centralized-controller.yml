@@ -209,7 +209,7 @@ jobs:
 
       # ===== STEP 1: DISCOVER DEPLOYMENTS =====
       - name: 🔍 Discover Deployments
-        if: github.event.client_payload.action != 'apply'
+        if: github.event.client_payload.action == 'validate'
         id: discover
         working-directory: source-repo
         run: |
@@ -277,7 +277,7 @@ jobs:
 
       # ===== STEP 2: PRE-DEPLOYMENT VALIDATION (BEFORE terraform plan) =====
       - name: 🔍 Pre-Deployment Validation
-        if: (steps.discover.outputs.has_deployments == 'true' || steps.discover-apply.outputs.has_deployments == 'true') && github.event.client_payload.action != 'apply'
+        if: steps.discover.outputs.has_deployments == 'true' && github.event.client_payload.action == 'validate'
         id: pre_validation
         working-directory: source-repo
         continue-on-error: true
@@ -433,7 +433,7 @@ jobs:
 
       # ===== STEP 3: TERRAFORM PLAN (Only runs if pre-validation passed) =====
       - name: 📋 Terraform Plan
-        if: steps.discover.outputs.has_deployments == 'true' && github.event.client_payload.action != 'apply'
+        if: steps.discover.outputs.has_deployments == 'true' && github.event.client_payload.action == 'validate'
         id: plan
         working-directory: source-repo
         env:
@@ -783,7 +783,7 @@ jobs:
 
       # ===== STEP 4: POST PR COMMENT =====
       - name: 💬 Post PR Comment
-        if: always() && steps.discover.outputs.has_deployments == 'true'
+        if: always() && steps.discover.outputs.has_deployments == 'true' && github.event.client_payload.action == 'validate'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -1044,35 +1044,9 @@ jobs:
               console.log('❌ Added labels: opa-failed, needs-fixes');
             }
 
-      # ===== STEP 5: SETUP PYTHON FOR PR MERGE SCRIPT =====
-      - name: 🐍 Setup Python
-        if: github.event.client_payload.action == 'merge' && steps.opa.outputs.validation_status != ''
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-          
-      - name: 📦 Install Python dependencies
-        if: github.event.client_payload.action == 'merge' && steps.opa.outputs.validation_status != ''
-        run: |
-          pip install -r scripts/requirements.txt
-          
-      # ===== STEP 6: HANDLE PR MERGE WITH PYTHON SCRIPT =====
-      - name: 🏷️ Check OPA Status and Merge PR
-        if: github.event.client_payload.action == 'merge'
-        id: merge
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          SOURCE_OWNER: ${{ github.event.client_payload.source_owner }}
-          SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
-          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
-          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          APPROVER: ${{ github.event.client_payload.approver }}
-        run: |
-          python scripts/handle_pr_merge.py
-
-      # ===== STEP 7: MERGE COMPLETE - Dev workflow will trigger apply =====
-      # Note: After successful merge, GitHub triggers the dev repo's dispatch-apply job
-      # which will dispatch action='apply' to this controller. No duplicate dispatch needed here.
+      # ===== NO MERGE HANDLING IN CONTROLLER =====
+      # Dev workflow handles merge based on environment (dev/stage/prod branch)
+      # Controller only validates OPA during apply phase
 
       # ===== SECURITY GATE: Validate OPA Status Before Apply =====
       - name: 🔒 Security Gate - Validate OPA Passed
