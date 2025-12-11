@@ -589,116 +589,105 @@ graph TB
 
 ---
 
-## Deployment Improvements
+## Organization Support
 
-### Before vs After Pipeline
+### Multi-Organization Architecture
 
 ```mermaid
 graph TB
-    subgraph MANUAL["❌ Manual Process (Before)"]
-        M1["Engineer writes Terraform code"]
-        M2["Manually run terraform plan"]
-        M3["Copy/paste plan to email/Slack"]
-        M4["Wait for security team review"]
-        M5["Manually check compliance"]
-        M6["Create PR manually"]
-        M7["Wait for approvals"]
-        M8["Manually run terraform apply"]
-        M9["Hope nothing breaks"]
-        
-        M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7 --> M8 --> M9
+    subgraph ORG1["🏢 Organization A"]
+        D1["dev-deployment-org-a"]
     end
     
-    subgraph AUTO["✅ Automated Pipeline (After)"]
-        A1["Engineer pushes config"]
-        A2["Auto-create PR"]
-        A3["Auto terraform plan"]
-        A4["Auto OPA validation"]
-        A5["Auto-post results"]
-        A6["Engineer approves"]
-        A7["Auto-merge to env branch"]
-        A8["Auto terraform apply"]
-        A9["Auto-post success"]
-        
-        A1 --> A2 --> A3 --> A4 --> A5 --> A6 --> A7 --> A8 --> A9
+    subgraph ORG2["🏢 Organization B"]
+        D2["dev-deployment-org-b"]
     end
     
-    style MANUAL fill:#ffcdd2,stroke:#c62828,stroke-width:2px
-    style AUTO fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    subgraph ORG3["🏢 Organization C"]
+        D3["dev-deployment-org-c"]
+    end
+    
+    subgraph CENTRAL["🎯 Centralized Platform (Shared)"]
+        CTRL["centerlized-pipline-<br/>Controller Workflows"]
+        OPA["OPA-Policies<br/>Security Rules"]
+        MOD["tf-module<br/>Reusable Modules"]
+    end
+    
+    D1 -->|"Dispatch Events"| CTRL
+    D2 -->|"Dispatch Events"| CTRL
+    D3 -->|"Dispatch Events"| CTRL
+    
+    CTRL -->|"Validates Against"| OPA
+    CTRL -->|"Uses"| MOD
+    
+    style ORG1 fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    style ORG2 fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style ORG3 fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    style CENTRAL fill:#fff3e0,stroke:#f57c00,stroke-width:3px
 ```
 
-### Key Improvements
+### How It Works for Multiple Organizations
 
-**1. Automation**
-- **Before:** Manual PR creation, plan execution, apply execution
-- **After:** Everything automated - push code and system handles rest
-- **Impact:** 95% reduction in manual steps
+**Each Organization Has:**
+- Own `dev-deployment` repository
+- Own AWS accounts (dev, staging, production)
+- Own development teams
+- Own deployment cadence
 
-**2. Security**
-- **Before:** Manual security reviews, inconsistent checks
-- **After:** Automated OPA validation on every deployment
-- **Impact:** 100% policy compliance, zero bypasses
+**Shared Platform Provides:**
+- Centralized controller workflow (same logic for all)
+- Unified security policies (OPA rules)
+- Standard Terraform modules
+- Consistent deployment process
 
-**3. Speed**
-- **Before:** Hours to days (waiting for reviews, manual steps)
-- **After:** Minutes (5-10 min end-to-end)
-- **Impact:** 90%+ faster deployments
+**Key Benefits:**
+1. **Consistency** - All orgs use same validated process
+2. **Governance** - Central security team controls policies
+3. **Efficiency** - Update workflow once, benefits all orgs
+4. **Isolation** - Each org's deployments are independent
+5. **Scalability** - Add new orgs without code changes
 
-**4. Consistency**
-- **Before:** Each engineer does it differently
-- **After:** Same process for everyone, every time
-- **Impact:** Zero configuration drift
+### Organization Onboarding
 
-**5. Audit Trail**
-- **Before:** Email threads, Slack messages, manual notes
-- **After:** Everything in Git - commits, labels, PR comments
-- **Impact:** Complete traceability for compliance
+**Steps to add new organization:**
 
-**6. Error Prevention**
-- **Before:** Typos, wrong accounts, missed validations
-- **After:** Automated checks, environment validation, security gates
-- **Impact:** Zero deployment errors
+1. **Create dev-deployment repo** for the organization
+2. **Configure GitHub secrets** (AWS credentials, tokens)
+3. **Add organization to `accounts.yaml`**:
+   ```yaml
+   organizations:
+     org-name:
+       accounts:
+         dev: "123456789012"
+         staging: "123456789013"
+         production: "123456789014"
+   ```
+4. **Deploy first resource** - System auto-configures
 
-### Deployment Process Comparison
+**Time to onboard:** ~30 minutes
 
-| Step | Manual Process | Automated Pipeline | Time Saved |
-|------|----------------|-------------------|------------|
-| **Write Code** | ✍️ Manual | ✍️ Manual | - |
-| **Create PR** | ⏱️ 5-10 min | ⚡ 10 sec | 95% |
-| **Run Plan** | ⏱️ 15-20 min | ⚡ 2-3 min | 85% |
-| **Security Check** | ⏱️ 1-2 hours | ⚡ 1 min | 95% |
-| **Post Results** | ⏱️ 10-15 min | ⚡ 5 sec | 99% |
-| **Get Approval** | ⏱️ 2-24 hours | ⏱️ 5-10 min | 75% |
-| **Merge PR** | ⏱️ 5 min | ⚡ 15 sec | 95% |
-| **Deploy** | ⏱️ 15-20 min | ⚡ 2-3 min | 85% |
-| **Verify** | ⏱️ 10 min | ⚡ Auto | 100% |
-| **Total** | **4-26 hours** | **10-15 min** | **~90%** |
+**No changes needed to:**
+- Controller workflows
+- OPA policies
+- Terraform modules
+- Security configuration
 
-### Quality Improvements
+### Cross-Organization Features
 
-**Validation Coverage:**
-- ✅ Syntax validation (Terraform)
-- ✅ Security policies (OPA)
-- ✅ Naming conventions
-- ✅ Required tags
-- ✅ Cost controls
-- ✅ Compliance rules
-- ✅ Environment checks
-- ✅ Account verification
+**Centralized Audit:**
+- All deployments logged in controller repo
+- Cross-org compliance reports
+- Unified security dashboard
 
-**All automated, every deployment, no exceptions**
+**Policy Inheritance:**
+- Base policies apply to all orgs
+- Org-specific policies can be added
+- Security team approves all policy changes
 
-### Scalability Benefits
-
-**Deployment Capacity:**
-- **Manual:** ~10-20 deployments/week (team bottleneck)
-- **Automated:** Unlimited parallel deployments
-- **Result:** 10x capacity increase without adding headcount
-
-**Team Efficiency:**
-- Engineers focus on infrastructure design, not deployment mechanics
-- Security team sets policies once, applies everywhere
-- Platform team maintains one workflow, benefits all teams
+**Module Sharing:**
+- All orgs use same tested modules
+- Version pinning available
+- Automatic updates optional
 
 ---
 
@@ -809,145 +798,58 @@ git push
 
 ---
 
-## Version 2.0 - Enterprise Terraform Pipeline
+## Version Information
 
-**Release Date:** December 2025  
-**Status:** Production Ready
+**Current Version:** 2.0
 
-### Architecture Overview
+### What's New in Version 2.0
 
-**4-Repository Model:**
-1. **dev-deployment** - Infrastructure configurations (.tfvars files)
-2. **centerlized-pipline-** - Controller workflows and orchestration
-3. **OPA-Policies** - Security policies and compliance rules
-4. **tf-module** - Reusable Terraform modules (S3, KMS, IAM, etc.)
+**Major Improvements:**
+1. **Label-Based Security Gates** - OPA results cached in PR labels
+   - Eliminates re-runs of policy validation
+   - Multi-gate enforcement (merge + apply phases)
+   - Clear visual status in GitHub UI
 
-### Core Features
+2. **Environment-Based Branching** - Dynamic branch mapping
+   - development → `dev` branch
+   - staging → `stage` branch
+   - production → `prod` branch
+   - Automatic environment detection from config
 
-**1. Automated Workflow**
-- Auto-create PR on code push
-- Automatic Terraform plan execution
-- OPA security validation
-- Environment-aware merging
-- Automated infrastructure deployment
+3. **Separated Merge Logic** - Controller focus improved
+   - Merge handled by dev-deployment workflow
+   - Controller only validates + applies
+   - Cleaner separation of concerns
 
-**2. Label-Based Security Gates**
-- OPA results cached in PR labels
-- Multi-gate enforcement (merge + apply)
-- No possibility to bypass security checks
-- Clear visual status in GitHub UI
+4. **Enhanced Audit Trail** - Complete traceability
+   - Detailed PR comments with environment info
+   - Squash merge commits with approval metadata
+   - Workflow run names include PR numbers
 
-**3. 3-Phase Deployment Process**
-- **Phase 1:** Validate (Controller runs plan + OPA)
-- **Phase 2:** Merge (dev-deployment workflow merges to env branch)
-- **Phase 3:** Apply (Controller deploys to AWS)
+5. **Multi-Organization Support** - Enterprise scalability
+   - Centralized platform serves multiple orgs
+   - Each org maintains own dev-deployment repo
+   - Shared policies and modules
+   - Independent deployment cycles
 
-**4. Environment-Based Branching**
-- `development` → auto-merge to `dev` branch
-- `staging` → auto-merge to `stage` branch
-- `production` → auto-merge to `prod` branch
+**Architecture Changes from v1.0:**
+- **v1.0:** 2-repo model (controller + dev-deployment)
+- **v2.0:** 4-repo model (controller + dev-deployment + OPA-Policies + tf-module)
 
-**5. Complete Audit Trail**
-- Detailed PR comments with plan results
-- Squash merge commits with approval metadata
-- Workflow run logs with PR tracking
-- Label history for compliance
+**Security Improvements:**
+- OPA validation results persisted in labels (v2.0)
+- Security gate checks labels at apply time (v2.0)
+- No possibility to bypass OPA validation (v2.0)
 
-**6. Multi-Organization Support**
-- Centralized platform serves multiple teams/orgs
-- Independent deployment cycles
-- Shared policies and modules
-- Scalable architecture
-
-### Technology Stack
-
-| Component | Technology | Version |
-|-----------|-----------|---------|
-| **Infrastructure as Code** | Terraform | 1.11.0+ |
-| **Policy Engine** | Open Policy Agent (OPA) | Latest |
-| **Orchestration** | GitHub Actions | - |
-| **Scripting** | Python | 3.11 |
-| **State Management** | AWS S3 + DynamoDB | - |
-| **Version Control** | Git | - |
-
-### Key Components
-
-**Controller Workflows:**
-- `centralized-controller.yml` - Validates and applies infrastructure
-- `opa-validator.py` - Security policy validation
-- `terraform-deployment-orchestrator-enhanced.py` - Deployment execution
-
-**Dev Workflows:**
-- `dispatch-to-controller.yml` - Handles PR lifecycle (create, merge, dispatch)
-
-**Configuration Files:**
-- `accounts.yaml` - AWS account mappings
-- `deployment-rules.yaml` - Deployment policies
-
-### Security Features
-
-**4-Layer Protection:**
-1. OPA validation during plan phase
-2. Label-based security gates
-3. Required human approval
-4. Security gate check at apply time
-
-**Compliance:**
-- 100% policy enforcement
-- No bypass mechanisms
-- Complete audit trail
-- Automated compliance reporting
-
-### Performance
-
-**Deployment Speed:**
-- Traditional process: 4-26 hours
-- Version 2.0: 10-15 minutes
-- **Improvement:** 90%+ faster
-
-**Capacity:**
-- Unlimited parallel deployments
-- No manual bottlenecks
-- Auto-scaling with GitHub Actions
-
-### Supported Resources
-
-- AWS S3 (buckets, policies, encryption)
-- AWS KMS (keys, aliases, grants)
-- AWS IAM (roles, policies, users)
-- Custom resources via tf-module
-
-### Requirements
-
-**GitHub:**
-- GitHub Actions enabled
-- Repository secrets configured
-- Branch protection rules
-
-**AWS:**
-- AWS accounts (dev, staging, production)
-- IAM credentials with deployment permissions
-- S3 bucket for state storage
-- DynamoDB table for state locking
-
-**Permissions:**
-- GitHub repository access
-- AWS account access
-- Terraform state access
-
-### Compatibility
-
-- ✅ GitHub Enterprise
-- ✅ AWS Commercial regions
-- ✅ AWS GovCloud (with modifications)
-- ✅ Multi-account AWS Organizations
-
-### License
-
-Internal Use Only
+**Workflow Improvements:**
+- Auto-PR creation (v2.0)
+- Environment-aware merging (v2.0)
+- Dynamic commit messages with audit info (v2.0)
+- Support for multiple organizations (v2.0)
 
 ---
 
-**Documentation:** Available in repository  
-**Support:** Platform Team  
-**Updates:** Automated via centralized controller
+**Release Date:** December 2025  
+**Architecture:** 4-repository model with label-based security gates  
+**Compatibility:** GitHub Actions, Terraform 1.11.0+, Python 3.11+  
+**License:** Internal Use
