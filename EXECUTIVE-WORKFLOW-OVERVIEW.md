@@ -486,17 +486,6 @@ sequenceDiagram
 
 ---
 
-## Technical Stack
-
-### Technology Architecture
-
-```mermaid
-graph TB
-    subgraph UI["🖥️ User Interface"]
-        GH[GitHub Web UI]
-        PR[Pull Requests]
-        COM[Comments]
-    end
 ## 🎯 Key Benefits - Version 2.0
 
 ### For Developers
