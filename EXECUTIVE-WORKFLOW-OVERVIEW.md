@@ -486,6 +486,21 @@ sequenceDiagram
 
 ---
 
+## 🔧 Technical Stack
+
+### Technology & Tools
+
+| Component | Technology | Version | Purpose |
+|-----------|-----------|---------|----------|
+| **IaC** | Terraform | 1.11.0 | Infrastructure as Code |
+| **Security** | OPA | 0.59.0 | Policy validation |
+| **Orchestration** | GitHub Actions | Latest | Workflow automation |
+| **Scripting** | Python | 3.x | Custom orchestration |
+| **State** | AWS S3 + DynamoDB | - | State storage & locking |
+| **Source Control** | Git | - | Version control |
+
+---
+
 ## 🎯 Key Benefits - Version 2.0
 
 ### For Developers
@@ -514,24 +529,29 @@ sequenceDiagram
 
 ---
 
-## 🏢 Multi-Organization Support
+## 👥 Multi-Team Support
 
-### How It Works
+### How It Works for Multiple Teams
 
-**Each Organization:**
-- Own `dev-deployment` repository
+**Each Team:**
+- Own `dev-deployment` repository (team-specific)
 - Own AWS accounts (dev/staging/prod)
 - Independent deployment schedules
+- Full autonomy over their infrastructure
 
-**Shared Platform:**
-- Same controller workflow
-- Same security policies
-- Same Terraform modules
-- Consistent process across all orgs
+**Shared Centralized Platform:**
+- Same controller workflow for all teams
+- Same security policies enforced
+- Same Terraform modules available
+- Consistent deployment process
 
-**Onboarding Time:** ~30 minutes per new organization
+**Benefits:**
+- Teams work independently without conflicts
+- Platform team manages one controller for all teams
+- Security team controls policies centrally
+- Add new teams without code changes
 
-**No Code Changes Needed** when adding new organizations!
+**Onboarding Time:** ~30 minutes per new team
 
 ---
 
