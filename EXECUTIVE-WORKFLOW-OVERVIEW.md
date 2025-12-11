@@ -24,7 +24,7 @@ graph TB
         D3["Environment Branches"]
         D1 --> D2
         D2 --> D3
-    end
+    end 
     
     subgraph CTRL["🎯 centerlized-pipline- (Platform Team)"]
         C1["centralized-controller.yml"]
@@ -59,87 +59,85 @@ graph TB
 
 ### Complete Workflow Architecture
 
-```mermaid
-flowchart TB
-    subgraph PUSH["🚀 DEVELOPER PUSH"]
-        A1[👨‍💻 Push to Feature Branch]
-        A2[📝 Auto-Create PR]
-        A1 --> A2
-    end
-    
-    subgraph VALIDATE["🔍 PHASE 1: VALIDATE (Controller)"]
-        V1[🔔 Receive Validate Event]
-        V2[📦 Checkout 3 Repos]
-        V3[⚙️ Terraform Init + Plan]
-        V4[🔒 OPA Policy Check]
-        V5{Policy Result?}
-        V6[✅ Add: opa-passed<br/>ready-for-review]
-        V7[❌ Add: opa-failed<br/>blocked<br/>needs-fixes]
-        V8[💬 Comment: Plan + Environment]
-        
-        V1 --> V2
-        V2 --> V3
-        V3 --> V4
-        V4 --> V5
-        V5 -->|Pass| V6
-        V5 -->|Fail| V7
-        V6 --> V8
-        V7 --> V8
-    end
-    
-    subgraph REVIEW["👥 HUMAN REVIEW"]
-        R1[👀 Engineer Reviews PR]
-        R2[✅ Approves PR]
-        R1 --> R2
-    end
-    
-    subgraph MERGE["🔀 PHASE 2: MERGE (Dev Workflow)"]
-        M1[🔔 PR Approved]
-        M2{Has opa-passed?}
-        M3[📖 Read Environment<br/>from PR Comment]
-        M4[🗺️ Map to Branch<br/>dev/stage/prod]
-        M5[🔀 Squash Merge<br/>with Audit Info]
-        M6[🚫 Block Merge]
-        
-        M1 --> M2
-        M2 -->|Yes| M3
-        M2 -->|No| M6
-        M3 --> M4
-        M4 --> M5
-    end
-    
-    subgraph APPLY["🚀 PHASE 3: APPLY (Controller)"]
-        AP1[🔔 Receive Apply Event]
-        AP2{Security Gate:<br/>Has opa-passed?}
-        AP3[⚙️ Terraform Apply]
-        AP4[☁️ Deploy to AWS]
-        AP5[💬 Comment: Success]
-        AP6[🚫 Block Apply]
-        
-        AP1 --> AP2
-        AP2 -->|Yes| AP3
-        AP2 -->|No| AP6
-        AP3 --> AP4
-        AP4 --> AP5
-    end
-    
-    PUSH --> VALIDATE
-    VALIDATE --> REVIEW
-    REVIEW --> MERGE
-    MERGE --> APPLY
-    
-    style PUSH fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
-    style VALIDATE fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    style REVIEW fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style MERGE fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
-    style APPLY fill:#ffebee,stroke:#d32f2f,stroke-width:2px
-    style V6 fill:#c8e6c9
-    style V7 fill:#ffcdd2
-    style M5 fill:#c8e6c9
-    style M6 fill:#ffcdd2
-    style AP5 fill:#c8e6c9
-    style AP6 fill:#ffcdd2
-```
+<div align="center" style="margin: 24px 0; font-family: 'Segoe UI', Arial, sans-serif;">
+    <table style="border-collapse: separate; border-spacing: 24px;">
+        <thead>
+            <tr>
+                <th style="padding: 16px 24px; border-radius: 12px; background: #e3f2fd; border: 1px solid #1976d2; min-width: 220px;">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                        <img alt="Developer" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="56" height="56" />
+                        <div style="font-size: 18px; font-weight: 600; color: #0d47a1;">🚀 Developer Push</div>
+                    </div>
+                </th>
+                <th style="padding: 16px 24px; border-radius: 12px; background: #fff3e0; border: 1px solid #f57c00; min-width: 220px;">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                        <img alt="Terraform" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/terraform/terraform-original.svg" width="56" height="56" />
+                        <img alt="Open Policy Agent" src="https://cdn.jsdelivr.net/npm/simple-icons@9/icons/openpolicyagent.svg" width="56" height="56" style="border-radius: 8px; background: #121212; padding: 8px;" />
+                        <div style="font-size: 18px; font-weight: 600; color: #e65100;">🔍 Phase 1: Validate<br/>(Controller)</div>
+                    </div>
+                </th>
+                <th style="padding: 16px 24px; border-radius: 12px; background: #e8f5e9; border: 1px solid #388e3c; min-width: 220px;">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                        <img alt="Git" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/git/git-original.svg" width="56" height="56" />
+                        <div style="font-size: 18px; font-weight: 600; color: #1b5e20;">🔀 Phase 2: Merge<br/>(dev-deployment)</div>
+                    </div>
+                </th>
+                <th style="padding: 16px 24px; border-radius: 12px; background: #ffebee; border: 1px solid #d32f2f; min-width: 220px;">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                        <img alt="AWS" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/amazonwebservices/amazonwebservices-original.svg" width="64" height="64" />
+                        <div style="font-size: 18px; font-weight: 600; color: #b71c1c;">🚀 Phase 3: Apply<br/>(Controller)</div>
+                    </div>
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td style="vertical-align: top; font-size: 14px; color: #0d47a1; line-height: 1.6; padding: 0 16px 16px;">
+                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
+                        <li>Developer pushes feature branch</li>
+                        <li>GitHub Action auto-creates PR</li>
+                        <li>Context sent via dispatch payload</li>
+                    </ul>
+                </td>
+                <td style="vertical-align: top; font-size: 14px; color: #e65100; line-height: 1.6; padding: 0 16px 16px;">
+                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
+                        <li>Controller checks out configs, policies, modules</li>
+                        <li>Terraform init + plan</li>
+                        <li>OPA security validation</li>
+                        <li>Applies labels and posts plan summary</li>
+                    </ul>
+                </td>
+                <td style="vertical-align: top; font-size: 14px; color: #1b5e20; line-height: 1.6; padding: 0 16px 16px;">
+                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
+                        <li>Engineer reviews and approves PR</li>
+                        <li>Workflow reads <code>opa-passed</code> label</li>
+                        <li>Maps environment → dev/stage/prod branches</li>
+                        <li>Squash merge with audit metadata</li>
+                    </ul>
+                </td>
+                <td style="vertical-align: top; font-size: 14px; color: #b71c1c; line-height: 1.6; padding: 0 16px 16px;">
+                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
+                        <li>Apply event triggers controller</li>
+                        <li>Security gate re-checks labels</li>
+                        <li>Terraform apply against AWS</li>
+                        <li>Deployment summary posted to PR</li>
+                    </ul>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="4" style="text-align: center; padding-top: 12px; font-size: 15px; color: #37474f;">
+                    <span style="font-weight: 600;">Flow:</span> Developer Push
+                    <span style="margin: 0 8px;">➜</span>
+                    Validate (Controller)
+                    <span style="margin: 0 8px;">➜</span>
+                    Human Review &amp; Merge (dev-deployment)
+                    <span style="margin: 0 8px;">➜</span>
+                    Apply to AWS (Controller)
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
 
 ---
 
