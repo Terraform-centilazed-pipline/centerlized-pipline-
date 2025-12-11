@@ -60,83 +60,67 @@ graph TB
 ### Complete Workflow Architecture
 
 <div align="center" style="margin: 24px 0; font-family: 'Segoe UI', Arial, sans-serif;">
-    <table style="border-collapse: separate; border-spacing: 24px;">
-        <thead>
-            <tr>
-                <th style="padding: 16px 24px; border-radius: 12px; background: #e3f2fd; border: 1px solid #1976d2; min-width: 220px;">
-                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
-                        <img alt="Developer" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="56" height="56" />
-                        <div style="font-size: 18px; font-weight: 600; color: #0d47a1;">🚀 Developer Push</div>
-                    </div>
-                </th>
-                <th style="padding: 16px 24px; border-radius: 12px; background: #fff3e0; border: 1px solid #f57c00; min-width: 220px;">
-                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
-                        <img alt="Terraform" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/terraform/terraform-original.svg" width="56" height="56" />
-                        <img alt="Open Policy Agent" src="https://cdn.jsdelivr.net/npm/simple-icons@9/icons/openpolicyagent.svg" width="56" height="56" style="border-radius: 8px; background: #121212; padding: 8px;" />
-                        <div style="font-size: 18px; font-weight: 600; color: #e65100;">🔍 Phase 1: Validate<br/>(Controller)</div>
-                    </div>
-                </th>
-                <th style="padding: 16px 24px; border-radius: 12px; background: #e8f5e9; border: 1px solid #388e3c; min-width: 220px;">
-                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
-                        <img alt="Git" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/git/git-original.svg" width="56" height="56" />
-                        <div style="font-size: 18px; font-weight: 600; color: #1b5e20;">🔀 Phase 2: Merge<br/>(dev-deployment)</div>
-                    </div>
-                </th>
-                <th style="padding: 16px 24px; border-radius: 12px; background: #ffebee; border: 1px solid #d32f2f; min-width: 220px;">
-                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
-                        <img alt="AWS" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/amazonwebservices/amazonwebservices-original.svg" width="64" height="64" />
-                        <div style="font-size: 18px; font-weight: 600; color: #b71c1c;">🚀 Phase 3: Apply<br/>(Controller)</div>
-                    </div>
-                </th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td style="vertical-align: top; font-size: 14px; color: #0d47a1; line-height: 1.6; padding: 0 16px 16px;">
-                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
-                        <li>Developer pushes feature branch</li>
-                        <li>GitHub Action auto-creates PR</li>
-                        <li>Context sent via dispatch payload</li>
-                    </ul>
-                </td>
-                <td style="vertical-align: top; font-size: 14px; color: #e65100; line-height: 1.6; padding: 0 16px 16px;">
-                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
-                        <li>Controller checks out configs, policies, modules</li>
-                        <li>Terraform init + plan</li>
-                        <li>OPA security validation</li>
-                        <li>Applies labels and posts plan summary</li>
-                    </ul>
-                </td>
-                <td style="vertical-align: top; font-size: 14px; color: #1b5e20; line-height: 1.6; padding: 0 16px 16px;">
-                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
-                        <li>Engineer reviews and approves PR</li>
-                        <li>Workflow reads <code>opa-passed</code> label</li>
-                        <li>Maps environment → dev/stage/prod branches</li>
-                        <li>Squash merge with audit metadata</li>
-                    </ul>
-                </td>
-                <td style="vertical-align: top; font-size: 14px; color: #b71c1c; line-height: 1.6; padding: 0 16px 16px;">
-                    <ul style="text-align: left; padding-left: 18px; margin: 0;">
-                        <li>Apply event triggers controller</li>
-                        <li>Security gate re-checks labels</li>
-                        <li>Terraform apply against AWS</li>
-                        <li>Deployment summary posted to PR</li>
-                    </ul>
-                </td>
-            </tr>
-            <tr>
-                <td colspan="4" style="text-align: center; padding-top: 12px; font-size: 15px; color: #37474f;">
-                    <span style="font-weight: 600;">Flow:</span> Developer Push
-                    <span style="margin: 0 8px;">➜</span>
-                    Validate (Controller)
-                    <span style="margin: 0 8px;">➜</span>
-                    Human Review &amp; Merge (dev-deployment)
-                    <span style="margin: 0 8px;">➜</span>
-                    Apply to AWS (Controller)
-                </td>
-            </tr>
-        </tbody>
-    </table>
+    <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 18px;">
+        <div style="padding: 20px 24px; border-radius: 16px; background: linear-gradient(145deg,#e8f1ff,#cddffb); border: 1px solid #1e88e5; box-shadow: 0 8px 18px rgba(30,136,229,0.15); max-width: 240px;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                <img alt="GitHub" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" width="60" height="60" />
+                <div style="font-size: 18px; font-weight: 700; color:#0d47a1;">1. Developer Push</div>
+                <ul style="font-size: 14px; color:#183153; text-align:left; padding-left: 18px; margin:0; line-height:1.6;">
+                    <li>Engineer commits infra change</li>
+                    <li>GitHub Action auto-creates PR</li>
+                    <li>Dispatch payload carries context</li>
+                </ul>
+            </div>
+        </div>
+
+        <div style="font-size: 36px; color:#607d8b; font-weight:600;">➜</div>
+
+        <div style="padding: 20px 24px; border-radius: 16px; background: linear-gradient(145deg,#fff1de,#ffe3c4); border: 1px solid #fb8c00; box-shadow: 0 8px 18px rgba(251,140,0,0.18); max-width: 260px;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                <div style="display:flex; gap:10px;">
+                    <img alt="Terraform" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/terraform/terraform-original.svg" width="52" height="52" />
+                    <img alt="OPA" src="https://cdn.jsdelivr.net/npm/simple-icons@9/icons/openpolicyagent.svg" width="52" height="52" style="border-radius:10px; background:#0f131a; padding:6px;" />
+                </div>
+                <div style="font-size: 18px; font-weight: 700; color:#e65100; text-align:center;">2. Validate (Controller)</div>
+                <ul style="font-size: 14px; color:#5d4037; text-align:left; padding-left: 18px; margin:0; line-height:1.6;">
+                    <li>Checkout configs + policies + modules</li>
+                    <li>Terraform init &amp; plan run</li>
+                    <li>OPA enforces policy gate</li>
+                    <li>Labels &amp; plan summary posted</li>
+                </ul>
+            </div>
+        </div>
+
+        <div style="font-size: 36px; color:#607d8b; font-weight:600;">➜</div>
+
+        <div style="padding: 20px 24px; border-radius: 16px; background: linear-gradient(145deg,#e4f7e7,#c8ebd1); border: 1px solid #43a047; box-shadow: 0 8px 18px rgba(67,160,71,0.18); max-width: 240px;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                <img alt="Git" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/git/git-original.svg" width="56" height="56" />
+                <div style="font-size: 18px; font-weight: 700; color:#1b5e20; text-align:center;">3. Merge (dev-deployment)</div>
+                <ul style="font-size: 14px; color:#2e7d32; text-align:left; padding-left: 18px; margin:0; line-height:1.6;">
+                    <li>Reviewer approves PR</li>
+                    <li>Workflow verifies <code>opa-passed</code></li>
+                    <li>Environment → branch mapping</li>
+                    <li>Squash merge with audit trail</li>
+                </ul>
+            </div>
+        </div>
+
+        <div style="font-size: 36px; color:#607d8b; font-weight:600;">➜</div>
+
+        <div style="padding: 20px 24px; border-radius: 16px; background: linear-gradient(145deg,#ffe3e3,#ffcdd2); border: 1px solid #e53935; box-shadow: 0 8px 18px rgba(229,57,53,0.18); max-width: 240px;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:12px;">
+                <img alt="AWS" src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/amazonwebservices/amazonwebservices-original.svg" width="60" height="60" />
+                <div style="font-size: 18px; font-weight: 700; color:#b71c1c; text-align:center;">4. Apply (Controller)</div>
+                <ul style="font-size: 14px; color:#c62828; text-align:left; padding-left: 18px; margin:0; line-height:1.6;">
+                    <li>Apply event dispatched</li>
+                    <li>Security gate re-checks labels</li>
+                    <li>Terraform apply on AWS accounts</li>
+                    <li>Deployment summary posted</li>
+                </ul>
+            </div>
+        </div>
+    </div>
 </div>
 
 ---
