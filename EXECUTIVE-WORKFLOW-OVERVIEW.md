@@ -567,45 +567,7 @@ graph TB
 
 ## Benefits Summary
 
-### ROI Visualization
-
-```mermaid
-graph LR
-    subgraph BEFORE["⏱️ MANUAL PROCESS (Before)"]
-        B1["👨‍💻 Create PR<br/>15 min"]
-        B2["📋 Run Plan<br/>20 min"]
-        B3["🔍 Manual Review<br/>30 min"]
-        B4["✅ Approval<br/>10 min"]
-        B5["🚀 Deploy<br/>25 min"]
-        B1 --> B2 --> B3 --> B4 --> B5
-        BT["⏱️ Total: 100 min<br/>❌ Error-prone<br/>❌ No consistency"]
-    end
-    
-    subgraph AFTER["🤖 AUTOMATED PROCESS (After)"]
-        A1["🤖 Auto PR<br/>0 min"]
-        A2["⚡ Auto Validate<br/>3 min"]
-        A3["👀 Review<br/>5 min"]
-        A4["✅ Approve<br/>1 min"]
-        A5["🚀 Auto Deploy<br/>3 min"]
-        A1 --> A2 --> A3 --> A4 --> A5
-        AT["⏱️ Total: 12 min<br/>✅ Zero errors<br/>✅ 100% consistent"]
-    end
-    
-    BEFORE -.->|Transform| AFTER
-    
-    style BEFORE fill:#ffcdd2
-    style AFTER fill:#c8e6c9
-    style BT fill:#ef5350,color:#fff
-    style AT fill:#66bb6a,color:#fff
-```
-
-### Quantified Benefits
-
-**Time Savings (per 100 deployments/month):**
-- Auto PR creation: ~25 hours/month
-- Auto validation: ~50 hours/month  
-- Parallel deployment: ~33 hours/month
-- **Total: ~140 hours/month saved = 88% reduction**
+### Enterprise-Scale Benefits
 
 **Quality Improvements:**
 - 100% policy compliance (OPA enforced, no exceptions)
@@ -625,16 +587,107 @@ graph LR
 - Multi-gate validation (merge + apply)
 - Complete traceability (every action logged)
 
-### Cost Comparison
+---
 
-| Metric | Manual | Automated | Improvement |
-|--------|--------|-----------|-------------|
-| **Deployment Time** | 100 min | 12 min | **88% faster** |
-| **Human Effort** | 100 min | 6 min | **94% reduction** |
-| **Error Rate** | ~5% | 0% | **100% reduction** |
-| **Monthly Cost** | $7,000 | $840 | **$6,160 saved/month** |
-| **Compliance** | ~85% | 100% | **15% improvement** |
-| **Audit Trail** | Partial | Complete | **100% coverage** |
+## Organization Support
+
+### Multi-Organization Architecture
+
+```mermaid
+graph TB
+    subgraph ORG1["🏢 Organization A"]
+        D1["dev-deployment-org-a"]
+    end
+    
+    subgraph ORG2["🏢 Organization B"]
+        D2["dev-deployment-org-b"]
+    end
+    
+    subgraph ORG3["🏢 Organization C"]
+        D3["dev-deployment-org-c"]
+    end
+    
+    subgraph CENTRAL["🎯 Centralized Platform (Shared)"]
+        CTRL["centerlized-pipline-<br/>Controller Workflows"]
+        OPA["OPA-Policies<br/>Security Rules"]
+        MOD["tf-module<br/>Reusable Modules"]
+    end
+    
+    D1 -->|"Dispatch Events"| CTRL
+    D2 -->|"Dispatch Events"| CTRL
+    D3 -->|"Dispatch Events"| CTRL
+    
+    CTRL -->|"Validates Against"| OPA
+    CTRL -->|"Uses"| MOD
+    
+    style ORG1 fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    style ORG2 fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style ORG3 fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    style CENTRAL fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+```
+
+### How It Works for Multiple Organizations
+
+**Each Organization Has:**
+- Own `dev-deployment` repository
+- Own AWS accounts (dev, staging, production)
+- Own development teams
+- Own deployment cadence
+
+**Shared Platform Provides:**
+- Centralized controller workflow (same logic for all)
+- Unified security policies (OPA rules)
+- Standard Terraform modules
+- Consistent deployment process
+
+**Key Benefits:**
+1. **Consistency** - All orgs use same validated process
+2. **Governance** - Central security team controls policies
+3. **Efficiency** - Update workflow once, benefits all orgs
+4. **Isolation** - Each org's deployments are independent
+5. **Scalability** - Add new orgs without code changes
+
+### Organization Onboarding
+
+**Steps to add new organization:**
+
+1. **Create dev-deployment repo** for the organization
+2. **Configure GitHub secrets** (AWS credentials, tokens)
+3. **Add organization to `accounts.yaml`**:
+   ```yaml
+   organizations:
+     org-name:
+       accounts:
+         dev: "123456789012"
+         staging: "123456789013"
+         production: "123456789014"
+   ```
+4. **Deploy first resource** - System auto-configures
+
+**Time to onboard:** ~30 minutes
+
+**No changes needed to:**
+- Controller workflows
+- OPA policies
+- Terraform modules
+- Security configuration
+
+### Cross-Organization Features
+
+**Centralized Audit:**
+- All deployments logged in controller repo
+- Cross-org compliance reports
+- Unified security dashboard
+
+**Policy Inheritance:**
+- Base policies apply to all orgs
+- Org-specific policies can be added
+- Security team approves all policy changes
+
+**Module Sharing:**
+- All orgs use same tested modules
+- Version pinning available
+- Automatic updates optional
 
 ---
 
@@ -743,6 +796,60 @@ git push
 
 ---
 
-**Version:** 2.0  
-**Date:** December 2025  
-**Architecture:** 4-repository model with label-based security gates
+---
+
+## Version Information
+
+**Current Version:** 2.0
+
+### What's New in Version 2.0
+
+**Major Improvements:**
+1. **Label-Based Security Gates** - OPA results cached in PR labels
+   - Eliminates re-runs of policy validation
+   - Multi-gate enforcement (merge + apply phases)
+   - Clear visual status in GitHub UI
+
+2. **Environment-Based Branching** - Dynamic branch mapping
+   - development → `dev` branch
+   - staging → `stage` branch
+   - production → `prod` branch
+   - Automatic environment detection from config
+
+3. **Separated Merge Logic** - Controller focus improved
+   - Merge handled by dev-deployment workflow
+   - Controller only validates + applies
+   - Cleaner separation of concerns
+
+4. **Enhanced Audit Trail** - Complete traceability
+   - Detailed PR comments with environment info
+   - Squash merge commits with approval metadata
+   - Workflow run names include PR numbers
+
+5. **Multi-Organization Support** - Enterprise scalability
+   - Centralized platform serves multiple orgs
+   - Each org maintains own dev-deployment repo
+   - Shared policies and modules
+   - Independent deployment cycles
+
+**Architecture Changes from v1.0:**
+- **v1.0:** 2-repo model (controller + dev-deployment)
+- **v2.0:** 4-repo model (controller + dev-deployment + OPA-Policies + tf-module)
+
+**Security Improvements:**
+- OPA validation results persisted in labels (v2.0)
+- Security gate checks labels at apply time (v2.0)
+- No possibility to bypass OPA validation (v2.0)
+
+**Workflow Improvements:**
+- Auto-PR creation (v2.0)
+- Environment-aware merging (v2.0)
+- Dynamic commit messages with audit info (v2.0)
+- Support for multiple organizations (v2.0)
+
+---
+
+**Release Date:** December 2025  
+**Architecture:** 4-repository model with label-based security gates  
+**Compatibility:** GitHub Actions, Terraform 1.11.0+, Python 3.11+  
+**License:** Internal Use
