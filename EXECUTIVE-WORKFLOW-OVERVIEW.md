@@ -794,62 +794,6 @@ git push
 
 **Status:** Ready for production use
 
----
-
----
-
-## Version Information
-
-**Current Version:** 2.0
-
-### What's New in Version 2.0
-
-**Major Improvements:**
-1. **Label-Based Security Gates** - OPA results cached in PR labels
-   - Eliminates re-runs of policy validation
-   - Multi-gate enforcement (merge + apply phases)
-   - Clear visual status in GitHub UI
-
-2. **Environment-Based Branching** - Dynamic branch mapping
-   - development → `dev` branch
-   - staging → `stage` branch
-   - production → `prod` branch
-   - Automatic environment detection from config
-
-3. **Separated Merge Logic** - Controller focus improved
-   - Merge handled by dev-deployment workflow
-   - Controller only validates + applies
-   - Cleaner separation of concerns
-
-4. **Enhanced Audit Trail** - Complete traceability
-   - Detailed PR comments with environment info
-   - Squash merge commits with approval metadata
-   - Workflow run names include PR numbers
-
-5. **Multi-Organization Support** - Enterprise scalability
-   - Centralized platform serves multiple orgs
-   - Each org maintains own dev-deployment repo
-   - Shared policies and modules
-   - Independent deployment cycles
-
-**Architecture Changes from v1.0:**
-- **v1.0:** 2-repo model (controller + dev-deployment)
-- **v2.0:** 4-repo model (controller + dev-deployment + OPA-Policies + tf-module)
-
-**Security Improvements:**
-- OPA validation results persisted in labels (v2.0)
-- Security gate checks labels at apply time (v2.0)
-- No possibility to bypass OPA validation (v2.0)
-
-**Workflow Improvements:**
-- Auto-PR creation (v2.0)
-- Environment-aware merging (v2.0)
-- Dynamic commit messages with audit info (v2.0)
-- Support for multiple organizations (v2.0)
-
----
-
 **Release Date:** December 2025  
 **Architecture:** 4-repository model with label-based security gates  
-**Compatibility:** GitHub Actions, Terraform 1.11.0+, Python 3.11+  
 **License:** Internal Use
