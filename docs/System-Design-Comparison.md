@@ -358,6 +358,168 @@ init_cmd = [
 # No conflicts! Each service isolated!
 ```
 
+---
+
+#### Special Case: Single Tfvars with Multiple Services
+
+**Question:** What if one tfvars file deploys BOTH S3 and KMS? How is the backend key managed?
+
+**Answer:** Smart detection with "combined" namespace
+
+```python
+def _generate_dynamic_backend_key(deployment, services):
+    """
+    Intelligent backend key generation based on service count
+    """
+    account_name = deployment['account_name']
+    region = deployment['region']
+    project = deployment['project']
+    
+    # LOGIC: Determine service part based on what's detected
+    if len(services) == 0:
+        service_part = "general"      # No services detected
+    elif len(services) == 1:
+        service_part = services[0]    # Single service (s3, kms, iam)
+    else:
+        service_part = "combined"     # Multiple services in one file
+    
+    backend_key = f"{service_part}/{account_name}/{region}/{project}/terraform.tfstate"
+    return backend_key
+```
+
+**Real Examples:**
+
+**Scenario 1: Single Service (S3 only)**
+```hcl
+# deployment.tfvars
+s3_buckets = {
+  "my-data-bucket" = {
+    versioning = true
+  }
+}
+
+# Detected services: ['s3']
+# Backend key: "s3/account-123456/us-east-1/project/terraform.tfstate"
+```
+
+**Scenario 2: Multiple Services (S3 + KMS)**
+```hcl
+# deployment.tfvars
+s3_buckets = {
+  "my-data-bucket" = {
+    versioning = true
+  }
+}
+
+kms_keys = {
+  "my-encryption-key" = {
+    description = "Data encryption key"
+  }
+}
+
+# Detected services: ['s3', 'kms']
+# Backend key: "combined/account-123456/us-east-1/project/terraform.tfstate"
+#                ^^^^^^^^
+#                Uses "combined" because multiple services
+```
+
+**Scenario 3: No Services Detected**
+```hcl
+# deployment.tfvars (just variables, no resource blocks)
+environment = "production"
+tags = { Owner = "Platform Team" }
+
+# Detected services: []
+# Backend key: "general/account-123456/us-east-1/project/terraform.tfstate"
+```
+
+**Why "combined" for Multiple Services?**
+
+```
+Option 1: Use first service only (BAD)
+├── Problem: "s3/account/.../terraform.tfstate" 
+├── Misleading - file contains KMS too!
+└── Hard to find KMS resources later
+
+Option 2: Concatenate all services (BAD)
+├── Backend key: "s3-kms-iam/account/.../terraform.tfstate"
+├── Problem: Too long, inconsistent naming
+└── What if order changes? s3-kms vs kms-s3?
+
+Option 3: Use "combined" (BEST ✅)
+├── Backend key: "combined/account/.../terraform.tfstate"
+├── Clear signal: "This file manages multiple services"
+├── Consistent naming regardless of service order
+└── Easy to search: "Show me all combined deployments"
+```
+
+**Best Practices:**
+
+✅ **RECOMMENDED: One Service Per Tfvars**
+```
+Accounts/prod/
+├── s3-buckets.tfvars          # Only S3 → "s3/..." backend
+├── kms-keys.tfvars            # Only KMS → "kms/..." backend
+└── iam-roles.tfvars           # Only IAM → "iam/..." backend
+
+Benefits:
+- Maximum parallelization (all deploy at same time)
+- Clear ownership (S3 team owns s3-buckets.tfvars)
+- No lock conflicts
+- Faster state operations
+```
+
+⚠️ **ACCEPTABLE: Multiple Related Services**
+```
+Accounts/prod/
+└── data-lake-stack.tfvars     # S3 + KMS + IAM
+    ├── S3 buckets for data
+    ├── KMS keys for encryption
+    └── IAM roles for access
+    
+    # Backend: "combined/..." 
+    
+Use when:
+- Resources are tightly coupled
+- Must be deployed together
+- Small number of resources (<50 total)
+```
+
+❌ **AVOID: Everything in One File**
+```
+Accounts/prod/
+└── everything.tfvars           # S3 + KMS + IAM + Lambda + ...
+    └── 100+ resources
+    
+Problems:
+- Defeats purpose of state sharding
+- Long deployment times
+- Lock contention returns
+- Large state file (slow operations)
+```
+
+**Migration Strategy:**
+
+If you have a large combined tfvars, split it:
+
+```bash
+# Before: One large file
+Accounts/prod/infrastructure.tfvars  # 100 resources, all services
+
+# After: Split by service
+Accounts/prod/
+├── s3-buckets.tfvars      # 30 resources → s3/...
+├── kms-keys.tfvars        # 20 resources → kms/...
+├── iam-roles.tfvars       # 25 resources → iam/...
+└── lambda-functions.tfvars # 25 resources → lambda/...
+
+# Result:
+- 4 files deploy in parallel (vs 1 sequential)
+- 4 small state files (vs 1 large)
+- 4 isolated locks (vs 1 shared)
+- 73% faster deployments
+```
+
 **Real-World Example:**
 
 | Scenario | Traditional | Our System |
