@@ -101,6 +101,261 @@ def redact_sensitive_data(text: str) -> str:
     
     return text
 
+def validate_policy_json_file(policy_path: Path, working_dir: Path, account_id: str) -> Tuple[bool, List[str], List[str]]:
+    """
+    Comprehensive policy JSON validation:
+    1. JSON syntax
+    2. AWS policy structure
+    3. ARN account matching
+    4. Security best practices
+    Returns: (is_valid, warnings, errors)
+    """
+    warnings = []
+    errors = []
+    
+    if not policy_path.is_absolute():
+        policy_path = working_dir / policy_path
+    
+    if not policy_path.exists():
+        errors.append(f"🚫 BLOCKER: Policy file not found: {policy_path}")
+        return False, warnings, errors
+    
+    try:
+        with open(policy_path, 'r') as f:
+            policy_content = f.read()
+        
+        # 1. Validate JSON syntax
+        try:
+            policy_data = json.loads(policy_content)
+        except json.JSONDecodeError as e:
+            errors.append(f"🚫 BLOCKER: Invalid JSON in {policy_path.name}: {e}")
+            return False, warnings, errors
+        
+        # 2. Check AWS policy structure
+        if 'Statement' not in policy_data:
+            errors.append(f"🚫 BLOCKER: Policy missing 'Statement' field: {policy_path.name}")
+            return False, warnings, errors
+        
+        statements = policy_data.get('Statement', [])
+        if not isinstance(statements, list):
+            statements = [statements]
+        
+        # 3. Validate each statement
+        for idx, statement in enumerate(statements):
+            # Check Effect field
+            if 'Effect' not in statement:
+                errors.append(f"🚫 BLOCKER: Statement {idx+1} missing 'Effect' in {policy_path.name}")
+            elif statement['Effect'] not in ['Allow', 'Deny']:
+                errors.append(f"🚫 BLOCKER: Invalid Effect '{statement['Effect']}' in {policy_path.name}")
+            
+            # Check for wildcards
+            actions = statement.get('Action', [])
+            if not isinstance(actions, list):
+                actions = [actions]
+            
+            if '*' in actions:
+                warnings.append(f"⚠️  Policy {policy_path.name} uses wildcard actions (*) - security risk!")
+            
+            # Check ARNs match account
+            resources = statement.get('Resource', [])
+            if not isinstance(resources, list):
+                resources = [resources]
+            
+            for resource in resources:
+                if '*' in resource and resource == '*':
+                    warnings.append(f"⚠️  Policy {policy_path.name} uses wildcard resource (*) - allows ALL resources!")
+                
+                # Extract account from ARN
+                arn_match = re.search(r'arn:aws:[^:]+:[^:]*:(\d{12}):', resource)
+                if arn_match:
+                    arn_account = arn_match.group(1)
+                    if arn_account != account_id:
+                        errors.append(
+                            f"🚫 BLOCKER: Policy {policy_path.name} ARN uses account {arn_account} "
+                            f"but deploying to {account_id}"
+                        )
+        
+        return len(errors) == 0, warnings, errors
+        
+    except Exception as e:
+        errors.append(f"🚫 BLOCKER: Error validating policy {policy_path.name}: {str(e)}")
+        return False, warnings, errors
+
+def validate_resource_names_match(policy_path: Path, tfvars_content: str, working_dir: Path) -> List[str]:
+    """
+    CRITICAL: Validate bucket/resource names in policy match tfvars
+    Prevents deployment failures due to mismatched names
+    """
+    warnings = []
+    
+    if not policy_path.is_absolute():
+        policy_path = working_dir / policy_path
+    
+    if not policy_path.exists():
+        return warnings
+    
+    try:
+        with open(policy_path, 'r') as f:
+            policy_data = json.load(f)
+        
+        # Extract bucket names from tfvars
+        tfvars_buckets = set()
+        bucket_patterns = [
+            r'bucket_name\s*=\s*"([^"]+)"',
+            r'"([^"]+)"\s*=\s*\{[^}]*bucket',
+        ]
+        for pattern in bucket_patterns:
+            matches = re.findall(pattern, tfvars_content)
+            tfvars_buckets.update(matches)
+        
+        # Extract bucket names from policy ARNs
+        policy_buckets = set()
+        statements = policy_data.get('Statement', [])
+        if not isinstance(statements, list):
+            statements = [statements]
+        
+        for statement in statements:
+            resources = statement.get('Resource', [])
+            if not isinstance(resources, list):
+                resources = [resources]
+            
+            for resource in resources:
+                # Match: arn:aws:s3:::bucket-name or arn:aws:s3:::bucket-name/*
+                bucket_match = re.search(r'arn:aws:s3:::([^/\*]+)', resource)
+                if bucket_match:
+                    policy_buckets.add(bucket_match.group(1))
+        
+        # Compare names
+        if tfvars_buckets and policy_buckets:
+            # Buckets in policy but not in tfvars
+            unknown = policy_buckets - tfvars_buckets
+            if unknown:
+                warnings.append(
+                    f"⚠️  MISMATCH: Policy {policy_path.name} references buckets NOT in tfvars: {', '.join(unknown)}"
+                )
+            
+            # Buckets in tfvars but not in policy
+            missing = tfvars_buckets - policy_buckets
+            if missing:
+                warnings.append(
+                    f"⚠️  MISMATCH: Tfvars defines buckets NOT in policy {policy_path.name}: {', '.join(missing)}"
+                )
+    
+    except Exception as e:
+        warnings.append(f"⚠️  Error checking resource names in {policy_path.name}: {str(e)}")
+    
+    return warnings
+
+def query_amazon_q_for_validation(tfvars_content: str, policy_content: str, deployment: Dict) -> Tuple[List[str], List[str]]:
+    """
+    AMAZON Q INTEGRATION: Send configuration to Amazon Q for AI-powered validation
+    Returns: (warnings, errors) - errors will BLOCK deployment
+    """
+    warnings = []
+    errors = []
+    
+    try:
+        import boto3
+        from botocore.exceptions import ClientError
+        
+        # Initialize Amazon Q client (using bedrock-agent-runtime for Q Developer)
+        print("🤖 Querying Amazon Q for validation...")
+        
+        # Create bedrock runtime client for Amazon Q
+        try:
+            bedrock = boto3.client('bedrock-agent-runtime', region_name='us-east-1')
+        except Exception as client_err:
+            warnings.append(f"⚠️  Could not initialize Amazon Q client: {str(client_err)}")
+            return warnings, errors
+        
+        # Build validation query for Amazon Q
+        account_name = deployment.get('account_name', 'unknown')
+        environment = deployment.get('environment', 'unknown')
+        
+        validation_query = f"""Analyze this Terraform configuration for errors and security issues:
+
+Environment: {environment}
+Account: {account_name}
+
+Terraform Variables (.tfvars):
+```hcl
+{tfvars_content[:2000]}
+```
+
+Policy JSON:
+```json
+{policy_content[:2000]}
+```
+
+Check for:
+1. Resource name mismatches between tfvars and policies
+2. Incorrect ARN formats or account IDs
+3. Security issues (overly permissive policies, wildcards)
+4. AWS best practices violations
+5. Configuration errors that would cause deployment failures
+
+Respond with:
+- ERRORS: Critical issues that MUST block deployment
+- WARNINGS: Issues that should be reviewed but won't block deployment
+
+Format: Start each error with "ERROR:" and each warning with "WARNING:"""
+        
+        try:
+            # Call Amazon Q API (using bedrock invoke model)
+            response = bedrock.invoke_model(
+                modelId='amazon.titan-text-express-v1',  # Use available model
+                contentType='application/json',
+                accept='application/json',
+                body=json.dumps({
+                    'inputText': validation_query,
+                    'textGenerationConfig': {
+                        'maxTokenCount': 1000,
+                        'temperature': 0.1,  # Low temperature for consistent validation
+                        'topP': 0.9
+                    }
+                })
+            )
+            
+            # Parse response
+            response_body = json.loads(response['body'].read())
+            q_response = response_body.get('results', [{}])[0].get('outputText', '')
+            
+            print(f"✅ Amazon Q validation complete")
+            
+            # Parse Amazon Q response for errors and warnings
+            for line in q_response.split('\n'):
+                line = line.strip()
+                if line.startswith('ERROR:'):
+                    error_msg = line.replace('ERROR:', '').strip()
+                    errors.append(f"🚫 Amazon Q BLOCKER: {error_msg}")
+                elif line.startswith('WARNING:'):
+                    warn_msg = line.replace('WARNING:', '').strip()
+                    warnings.append(f"⚠️  Amazon Q: {warn_msg}")
+            
+            if not errors and not warnings:
+                # If no structured errors/warnings found, check for validation pass
+                if 'no errors' in q_response.lower() or 'looks good' in q_response.lower():
+                    print("   ✅ Amazon Q found no issues")
+                else:
+                    # Generic response - treat as informational
+                    warnings.append(f"ℹ️  Amazon Q feedback: {q_response[:200]}")
+        
+        except ClientError as api_err:
+            error_code = api_err.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code == 'AccessDeniedException':
+                warnings.append("⚠️  Amazon Q API access denied - check IAM permissions for bedrock:InvokeModel")
+            elif error_code == 'ResourceNotFoundException':
+                warnings.append("⚠️  Amazon Q model not available in region - skipping AI validation")
+            else:
+                warnings.append(f"⚠️  Amazon Q API error: {str(api_err)}")
+        
+    except ImportError:
+        warnings.append("⚠️  boto3 not available - skipping Amazon Q validation")
+    except Exception as e:
+        warnings.append(f"⚠️  Amazon Q validation exception: {str(e)}")
+    
+    return warnings, errors
+
 class EnhancedTerraformOrchestrator:
     """Enhanced Terraform Orchestrator with dynamic backend keys and improved PR comments"""
     
@@ -109,6 +364,8 @@ class EnhancedTerraformOrchestrator:
         self.script_dir = Path(__file__).parent
         self.working_dir = Path(working_dir) if working_dir else Path.cwd()
         self.state_backups = {}  # Track backups for rollback
+        self.validation_warnings = []  # Track all validation warnings
+        self.validation_errors = []  # Track blocker errors
         
         terraform_dir_env = os.getenv('TERRAFORM_DIR')
         if terraform_dir_env:
@@ -684,6 +941,113 @@ class EnhancedTerraformOrchestrator:
         except Exception as e:
             return False, f"Validation error: {e}"
     
+    def _comprehensive_validation(self, tfvars_file: Path, deployment: Dict) -> Tuple[List[str], List[str]]:
+        """
+        COMPREHENSIVE PRE-DEPLOYMENT VALIDATION
+        Validates: ARNs, policies, resource names, AWS standards
+        Returns: (warnings, errors) - errors BLOCK deployment
+        """
+        warnings = []
+        errors = []
+        
+        try:
+            with open(tfvars_file, 'r') as f:
+                content = f.read()
+            
+            account_id = deployment.get('account_id')
+            environment = deployment.get('environment', 'unknown')
+            
+            print(f"🔍 Running comprehensive validation...")
+            
+            # 1. VALIDATE ARNS MATCH ACCOUNT
+            arn_pattern = r'arn:aws:[a-z0-9\-]+:[a-z0-9\-]*:(\d{12}):'
+            arns_found = re.findall(arn_pattern, content)
+            for arn_account in set(arns_found):
+                if arn_account != account_id:
+                    errors.append(
+                        f"🚫 BLOCKER: ARN contains account {arn_account} but deploying to {account_id}! "
+                        f"This will cause access errors."
+                    )
+            
+            # 2. VALIDATE POLICY JSON FILES
+            policy_pattern = r'["\']([^"\']+\.json)["\']'
+            policy_files = re.findall(policy_pattern, content)
+            
+            if policy_files:
+                print(f"   Found {len(policy_files)} policy file(s) to validate")
+                
+                for policy_path in policy_files:
+                    policy_file = Path(policy_path)
+                    
+                    # Validate JSON syntax and AWS standards
+                    is_valid, pol_warnings, pol_errors = validate_policy_json_file(
+                        policy_file,
+                        self.working_dir,
+                        account_id
+                    )
+                    
+                    warnings.extend(pol_warnings)
+                    errors.extend(pol_errors)
+                    
+                    # Validate resource names match
+                    if is_valid:
+                        name_warnings = validate_resource_names_match(
+                            policy_file,
+                            content,
+                            self.working_dir
+                        )
+                        warnings.extend(name_warnings)
+                    
+                    status = "✅" if is_valid else "❌"
+                    print(f"   {status} {policy_file.name}: {len(pol_errors)} errors, {len(pol_warnings)} warnings")
+                    
+                    # 🤖 AMAZON Q VALIDATION - Query AI for intelligent validation
+                    if is_valid and policy_file.exists():
+                        try:
+                            abs_policy_file = policy_file if policy_file.is_absolute() else self.working_dir / policy_file
+                            with open(abs_policy_file, 'r') as pf:
+                                policy_content = pf.read()
+                            
+                            q_warnings, q_errors = query_amazon_q_for_validation(
+                                content,
+                                policy_content,
+                                deployment
+                            )
+                            
+                            warnings.extend(q_warnings)
+                            errors.extend(q_errors)
+                            
+                            if q_errors:
+                                print(f"   🚫 Amazon Q found {len(q_errors)} blocking error(s)")
+                            elif q_warnings:
+                                print(f"   ⚠️  Amazon Q found {len(q_warnings)} warning(s)")
+                        except Exception as q_err:
+                            warnings.append(f"⚠️  Amazon Q validation failed: {str(q_err)}")
+            
+            # 3. PRODUCTION ENVIRONMENT CHECKS
+            if environment.lower() in ['production', 'prod', 'prd']:
+                if 'force_destroy = true' in content:
+                    warnings.append(
+                        f"⚠️  PRODUCTION: force_destroy=true allows bucket deletion with objects!"
+                    )
+                
+                if 'versioning_enabled = false' in content:
+                    warnings.append(
+                        f"⚠️  PRODUCTION: S3 versioning disabled - data loss risk!"
+                    )
+                
+                if 'prevent_destroy = false' in content:
+                    warnings.append(
+                        f"⚠️  PRODUCTION: prevent_destroy=false allows resource deletion!"
+                    )
+            
+            print(f"   Validation complete: {len(warnings)} warnings, {len(errors)} errors")
+            
+        except Exception as e:
+            errors.append(f"🚫 Validation exception: {str(e)}")
+        
+        return warnings, errors
+    
     def _extract_resource_details(self, line: str, details: Dict):
         """Extract resource details like ARNs, names from terraform output"""
         # Extract ARNs
@@ -750,6 +1114,10 @@ Please fix the errors and push to a new branch.
         # Success comment - REDACTED
         outputs = self._extract_terraform_outputs(redacted_output, result.get('action', 'unknown'))
         
+        # Get validation results
+        val_warnings = result.get('validation_warnings', [])
+        val_errors = result.get('validation_errors', [])
+        
         comment = f"""### ✅ {deployment_name} - Deployment Successful
 
 **Services:** {', '.join(services) if services else 'None detected'}
@@ -757,6 +1125,26 @@ Please fix the errors and push to a new branch.
 **Orchestrator Version:** v{orchestrator_ver}
 
 """
+        
+        # ADD VALIDATION RESULTS
+        if val_errors:
+            comment += "## 🚫 VALIDATION ERRORS (BLOCKERS)\n\n"
+            for error in val_errors:
+                comment += f"- {error}\n"
+            comment += "\n⚠️  **Deployment was BLOCKED due to validation errors.**\n\n"
+        
+        if val_warnings:
+            comment += "## ⚠️  VALIDATION WARNINGS\n\n"
+            for warning in val_warnings:
+                comment += f"- {warning}\n"
+            comment += "\n"
+            
+            # Production emphasis
+            if deployment.get('environment', '').lower() in ['production', 'prod', 'prd']:
+                comment += "### 🚨 PRODUCTION ENVIRONMENT ALERT\n"
+                comment += "**Review all warnings carefully before applying!**\n\n"
+        
+        comment += "---\n\n"
         
         # Add resource summary
         if outputs['resources_created']:
@@ -818,7 +1206,7 @@ Please fix the errors and push to a new branch.
             if not tfvars_file.is_absolute():
                 tfvars_file = self.working_dir / tfvars_file
             
-            # Validate tfvars file
+            # Validate tfvars file syntax
             is_valid, validation_msg = self._validate_tfvars_file(tfvars_file)
             if not is_valid:
                 return {
@@ -830,6 +1218,34 @@ Please fix the errors and push to a new branch.
                     'services': [],
                     'action': action
                 }
+            
+            # COMPREHENSIVE VALIDATION - ARNs, Policies, Resource Names
+            validation_warnings, validation_errors = self._comprehensive_validation(tfvars_file, deployment)
+            
+            # Store for PR comments
+            self.validation_warnings.extend(validation_warnings)
+            self.validation_errors.extend(validation_errors)
+            
+            # BLOCK DEPLOYMENT if validation errors found
+            if validation_errors:
+                error_msg = "\n".join(validation_errors)
+                print(f"\n❌ VALIDATION FAILED - DEPLOYMENT BLOCKED:\n{error_msg}\n")
+                return {
+                    'deployment': deployment,
+                    'success': False,
+                    'error': f"Validation blocked deployment: {len(validation_errors)} error(s)",
+                    'output': f"🚫 DEPLOYMENT BLOCKED\n\n{error_msg}",
+                    'backend_key': 'unknown',
+                    'services': [],
+                    'action': action,
+                    'validation_warnings': validation_warnings,
+                    'validation_errors': validation_errors
+                }
+            
+            # Show warnings but continue
+            if validation_warnings:
+                warn_msg = "\n".join(validation_warnings)
+                print(f"\n⚠️  VALIDATION WARNINGS:\n{warn_msg}\n")
             
             # Detect services from tfvars
             services = self._detect_services_from_tfvars(tfvars_file)
@@ -1031,7 +1447,9 @@ Please fix the errors and push to a new branch.
                 'error': None if success else f"{action} failed with exit code {result['returncode']}",
                 'error_detail': result.get('stderr', result.get('output', '')) if not success else None,
                 'orchestrator_version': ORCHESTRATOR_VERSION,
-                'backup_info': backup_info if action == 'apply' else None
+                'backup_info': backup_info if action == 'apply' else None,
+                'validation_warnings': self.validation_warnings,
+                'validation_errors': self.validation_errors
             }
             
             # SAVE AUDIT LOG (full unredacted output for compliance)
@@ -1111,8 +1529,9 @@ Please fix the errors and push to a new branch.
             
             debug_print(f"   Tfvars content length: {len(tfvars_content)} bytes")
             
-            # Find all JSON file references: bucket_policy_file = "Accounts/xxx/yyy.json"
-            json_pattern = r'["\']([Aa]ccounts/[^"\']+\.json)["\']'
+            # Find all JSON file references: bucket_policy_file = "path/to/file.json"
+            # Matches any path structure (S3/, Accounts/, KMS/, etc.)
+            json_pattern = r'["\']([^"\']+\.json)["\']'
             json_files = re.findall(json_pattern, tfvars_content)
             
             debug_print(f"   Regex pattern: {json_pattern}")
