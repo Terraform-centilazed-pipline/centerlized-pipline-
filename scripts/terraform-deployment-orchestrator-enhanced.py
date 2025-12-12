@@ -261,11 +261,23 @@ def query_amazon_q_for_validation(tfvars_content: str, policy_content: str, depl
         # Initialize Amazon Q client (using bedrock-agent-runtime for Q Developer)
         print("🤖 Querying Amazon Q for validation...")
         
-        # Create bedrock runtime client for Amazon Q
+        # OPTIONAL: Amazon Q validation (skip if not configured)
+        # Amazon Q Developer is FREE but requires IDE integration
+        # For API access, you need Amazon Q Business (paid)
+        # This validation is OPTIONAL - local validation is already comprehensive
+        
+        q_app_id = os.environ.get('AMAZON_Q_APP_ID')
+        if not q_app_id:
+            # Skip Amazon Q validation - not configured (THIS IS OK!)
+            print("   ℹ️  Amazon Q not configured - using local validation only")
+            return warnings, errors
+        
+        # Only proceed if explicitly configured
         try:
-            bedrock = boto3.client('bedrock-agent-runtime', region_name='us-east-1')
+            q_client = boto3.client('qbusiness', region_name='us-east-1')
         except Exception as client_err:
-            warnings.append(f"⚠️  Could not initialize Amazon Q client: {str(client_err)}")
+            # Gracefully skip if client unavailable
+            print(f"   ℹ️  Amazon Q unavailable - using local validation only")
             return warnings, errors
         
         # Build validation query for Amazon Q
@@ -301,24 +313,16 @@ Respond with:
 Format: Start each error with "ERROR:" and each warning with "WARNING:"""
         
         try:
-            # Call Amazon Q API (using bedrock invoke model)
-            response = bedrock.invoke_model(
-                modelId='amazon.titan-text-express-v1',  # Use available model
-                contentType='application/json',
-                accept='application/json',
-                body=json.dumps({
-                    'inputText': validation_query,
-                    'textGenerationConfig': {
-                        'maxTokenCount': 1000,
-                        'temperature': 0.1,  # Low temperature for consistent validation
-                        'topP': 0.9
-                    }
-                })
+            # Call Amazon Q Business API (enterprise version - optional)
+            response = q_client.chat_sync(
+                applicationId=q_app_id,
+                userMessage=validation_query,
+                userId='terraform-orchestrator',
+                clientToken=str(datetime.now().timestamp())
             )
             
-            # Parse response
-            response_body = json.loads(response['body'].read())
-            q_response = response_body.get('results', [{}])[0].get('outputText', '')
+            # Parse Amazon Q response
+            q_response = response.get('systemMessage', '')
             
             print(f"✅ Amazon Q validation complete")
             
