@@ -202,30 +202,48 @@ def validate_resource_names_match(policy_path: Path, tfvars_content: str, workin
             policy_data = json.load(f)
         
         # DYNAMIC: Extract resource KEY and resource NAME from tfvars (any service)
-        # Pattern: "resource-key" = { ... *_name = "actual-name" ... }
+        # Pattern: s3_buckets = { "resource-key" = { bucket_name = "actual-name" ... } }
         # CRITICAL: Check that resource KEY matches or is contained in actual resource name
         
-        # Extract blocks with resource keys and their properties
-        block_pattern = r'"([^"]+)"\s*=\s*\{([^}]+)\}'
-        blocks = re.findall(block_pattern, tfvars_content, re.DOTALL)
+        # Extract resource blocks from collections like s3_buckets, kms_keys, iam_roles, etc.
+        # Pattern: collection_name = { "key" = { ... } }
+        collection_pattern = r'(\w+)\s*=\s*\{([^}]+(?:\{[^}]*\}[^}]*)*)\}'
+        collections = re.findall(collection_pattern, tfvars_content, re.DOTALL)
         
-        # Check each resource block (DYNAMIC - works for any service)
-        for resource_key, block_content in blocks:
-            # DYNAMIC: Find ANY *_name attribute (bucket_name, function_name, role_name, etc.)
-            name_match = re.search(r'(\w+_name)\s*=\s*"([^"]+)"', block_content)
+        for collection_name, collection_content in collections:
+            # Skip non-resource collections (like tags, account, common_tags)
+            if collection_name in ['tags', 'common_tags', 'account', 'region', 'environment']:
+                continue
             
-            if name_match:
-                attribute_name = name_match.group(1)  # e.g., "bucket_name", "function_name"
-                actual_name = name_match.group(2)      # e.g., "arj-test-poc-3-use1-prd"
+            # Extract individual resource blocks: "resource-key" = { properties }
+            resource_pattern = r'"([^"]+)"\s*=\s*\{([^}]+)\}'
+            resources = re.findall(resource_pattern, collection_content, re.DOTALL)
+            
+            for resource_key, block_content in resources:
+                # Skip if resource_key looks like an account ID (all digits)
+                if resource_key.isdigit():
+                    continue
                 
-                # CRITICAL CHECK: Resource key must be contained in actual name
-                # Example: key="test-poc-3" should be in name="arj-test-poc-3-use1-prd"
-                if resource_key not in actual_name:
-                    errors.append(
-                        f"🚫 BLOCKER: Resource key '{resource_key}' does NOT match {attribute_name} '{actual_name}'. "
-                        f"Copy-paste error detected! Update BOTH resource key AND {attribute_name}. "
-                        f"Key must be part of name."
-                    )
+                # DYNAMIC: Find ANY *_name attribute (bucket_name, function_name, role_name, etc.)
+                name_match = re.search(r'(\w+_name)\s*=\s*"([^"]+)"', block_content)
+                
+                if name_match:
+                    attribute_name = name_match.group(1)  # e.g., "bucket_name", "function_name"
+                    actual_name = name_match.group(2)      # e.g., "arj-test-poc-3-use1-prd"
+                    
+                    # Debug output
+                    debug_print(f"Checking: collection={collection_name}, key='{resource_key}', {attribute_name}='{actual_name}'")
+                    
+                    # CRITICAL CHECK: Resource key must be contained in actual name
+                    # Example: key="test-poc-3" should be in name="arj-test-poc-3-use1-prd"
+                    if resource_key not in actual_name:
+                        errors.append(
+                            f"🚫 BLOCKER: Resource key '{resource_key}' (in {collection_name}) does NOT match {attribute_name} '{actual_name}'. "
+                            f"Copy-paste error detected! The resource key in your tfvars block must appear in the actual resource name. "
+                            f"Example: If key is 'my-bucket', then bucket_name must contain 'my-bucket' like 'my-bucket-prod-use1'."
+                        )
+                    else:
+                        debug_print(f"✅ Match found: '{resource_key}' is in '{actual_name}'")
         
         # DYNAMIC: Extract all resource names for policy comparison (any *_name attribute)
         actual_names = set()
