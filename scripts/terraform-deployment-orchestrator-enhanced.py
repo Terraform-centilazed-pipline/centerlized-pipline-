@@ -246,9 +246,13 @@ def validate_resource_names_match(policy_path: Path, tfvars_content: str, workin
                         debug_print(f"✅ Match found: '{resource_key}' is in '{actual_name}'")
         
         # DYNAMIC: Extract all resource names for policy comparison (any *_name attribute)
+        # BUT skip account_name - it's metadata, not a resource to validate
         actual_names = set()
-        all_name_matches = re.findall(r'\w+_name\s*=\s*"([^"]+)"', tfvars_content)
-        actual_names.update(all_name_matches)
+        all_name_matches = re.findall(r'(\w+_name)\s*=\s*"([^"]+)"', tfvars_content)
+        for attribute_name, name_value in all_name_matches:
+            # Skip non-resource name attributes (metadata fields)
+            if attribute_name not in ['account_name']:
+                actual_names.add(name_value)
         
         # Also check key_alias pattern (KMS-specific but dynamic)
         alias_matches = re.findall(r'key_alias\s*=\s*"(?:alias/)?([^"]+)"', tfvars_content)
