@@ -48,6 +48,47 @@ def strip_ansi_colors(text):
     bracket_codes = re.compile(r'\[(?:[0-9]+;?)*m')
     text = ansi_escape.sub('', text)
     text = bracket_codes.sub('', text)
+
+def backup_terraform_state(backend_bucket: str, backend_key: str, backup_reason: str = "migration") -> Tuple[bool, str]:
+    """Backup current Terraform state to S3 before migration.
+    
+    Args:
+        backend_bucket: S3 bucket containing state
+        backend_key: Current state file key (e.g., s3/account/region/project-s3/terraform.tfstate)
+        backup_reason: Reason for backup (migration, rollback, etc.)
+    
+    Returns:
+        Tuple of (success: bool, backup_key: str)
+    
+    Example:
+        Original: s3/arj-wkld-a-prd/us-east-1/test-poc-3-s3/terraform.tfstate
+        Backup:   backups/2025-12-12_14-30-00_migration/s3/arj-wkld-a-prd/us-east-1/test-poc-3-s3/terraform.tfstate
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    backup_key = f"backups/{timestamp}_{backup_reason}/{backend_key}"
+    
+    try:
+        # Copy state file to backup location
+        cmd = [
+            "aws", "s3", "cp",
+            f"s3://{backend_bucket}/{backend_key}",
+            f"s3://{backend_bucket}/{backup_key}"
+        ]
+        
+        debug_print(f"Backing up state: {backend_key} -> {backup_key}")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        print(f"✅ State backed up successfully: {backup_key}")
+        return True, backup_key
+        
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Failed to backup state: {e.stderr}"
+        print(f"❌ {error_msg}")
+        return False, ""
+    except Exception as e:
+        error_msg = f"Unexpected error during backup: {str(e)}"
+        print(f"❌ {error_msg}")
+        return False, ""
     return text
 
 def redact_sensitive_data(text: str) -> str:
@@ -809,24 +850,65 @@ class EnhancedTerraformOrchestrator:
             return []
 
     def _generate_dynamic_backend_key(self, deployment: Dict, services: List[str], tfvars_file: Path = None) -> str:
-        """Generate dynamic backend key: {service}/{account_name}/{region}/{project}/terraform.tfstate"""
+        """Generate dynamic backend key with ultra-granular resource-level isolation.
+        
+        Format: {service}/{account}/{region}/{project}/{resource_name}/terraform.tfstate
+        
+        Examples:
+        - s3/arj-wkld-a-prd/us-east-1/test-poc-3/arj-test-bucket/terraform.tfstate
+        - iam/arj-wkld-a-prd/us-east-1/test-poc-3/arj-admin-role/terraform.tfstate
+        - multi/arj-wkld-a-prd/us-east-1/test-poc-3/combined/terraform.tfstate (fallback)
+        
+        Each resource gets its own state file for maximum isolation.
+        """
         account_name = deployment.get('account_name', 'unknown')
         project = deployment.get('project', 'unknown') 
         region = deployment.get('region', 'us-east-1')
         
-        # Determine service part
+        # Extract resource names from tfvars
+        resource_names = []
+        if tfvars_file:
+            resource_names = self._extract_resource_names_from_tfvars(tfvars_file, services)
+        
+        # Determine service and resource name/path based on count
         if len(services) == 0:
             service_part = "general"
+            resource_path = "default"
         elif len(services) == 1:
             service_part = services[0]
+            # Handle single vs multiple resources
+            if len(resource_names) == 0:
+                resource_path = "default"
+            elif len(resource_names) == 1:
+                # Single resource - create subfolder with resource name
+                # Example: s3/.../project/bucket-name/terraform.tfstate
+                resource_path = resource_names[0]
+            else:
+                # Multiple resources - NO subfolder, state directly under project!
+                # Example: s3/.../project/terraform.tfstate (not s3/.../project/s3-5/...)
+                # The project folder already groups them, no need for extra level
+                resource_path = ""
         else:
-            service_part = "combined"
+            # Multiple services - use subfolder showing which services
+            # Examples:
+            # - S3 + IAM: multi/.../project/iam-s3/terraform.tfstate
+            # - S3 + Lambda + IAM: multi/.../project/iam-lambda-s3/terraform.tfstate
+            service_part = "multi"
+            resource_path = "-".join(sorted(services))
         
-        # Standard backend key format: {service}/{account_name}/{region}/{project}/terraform.tfstate
-        # Example: s3/arj-wkld-a-prd/us-east-1/test-4-poc-1/terraform.tfstate
-        backend_key = f"{service_part}/{account_name}/{region}/{project}/terraform.tfstate"
+        # Generate backend key based on resource path
+        if resource_path:
+            # Has subfolder (single resource or multi-service)
+            backend_key = f"{service_part}/{account_name}/{region}/{project}/{resource_path}/terraform.tfstate"
+        else:
+            # No subfolder (multiple resources of same service)
+            backend_key = f"{service_part}/{account_name}/{region}/{project}/terraform.tfstate"
         
-        debug_print(f"Generated backend key: {backend_key} (service: {service_part}, account: {account_name}, region: {region}, project: {project})")
+        debug_print(f"Generated backend key: {backend_key}")
+        debug_print(f"  Services: {services} -> service_part: {service_part}")
+        debug_print(f"  Resource names extracted: {resource_names}")
+        debug_print(f"  Project: {project}, Resource path: {resource_path}")
+        debug_print(f"  Account: {account_name}, Region: {region}")
         
         return backend_key
 
