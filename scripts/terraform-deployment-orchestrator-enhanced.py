@@ -931,10 +931,23 @@ class EnhancedTerraformOrchestrator:
         if len(services) > 1:
             # Multi-service now - check if single service states exist
             for service in services:
-                # Try: service/account/region/project/terraform.tfstate (no resource subfolder)
-                old_keys.append(f"{service}/{account}/{region}/{project}/terraform.tfstate")
-                # Try: service/account/region/project/*/terraform.tfstate (any resource subfolder)
-                # We'll list and check dynamically
+                # List all possible old state locations for this service
+                # Could be: service/.../project/terraform.tfstate OR service/.../project/*/terraform.tfstate
+                list_cmd = ["aws", "s3", "ls", f"s3://{backend_bucket}/{service}/{account}/{region}/{project}/", "--recursive"]
+                try:
+                    list_result = subprocess.run(list_cmd, capture_output=True, text=True)
+                    if list_result.returncode == 0:
+                        # Find terraform.tfstate files
+                        for line in list_result.stdout.splitlines():
+                            if 'terraform.tfstate' in line and not line.strip().endswith('/'):
+                                # Extract the key from the line (format: "date time size key")
+                                parts = line.split()
+                                if len(parts) >= 4:
+                                    key = ' '.join(parts[3:])  # Handle keys with spaces
+                                    old_keys.append(key)
+                                    debug_print(f"Found potential old state: {key}")
+                except Exception as e:
+                    debug_print(f"Error listing old states for {service}: {e}")
         
         # Check if any old state exists
         for old_key in old_keys:
