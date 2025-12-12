@@ -1493,10 +1493,24 @@ Please fix the errors and push to a new branch.
             if validation_errors:
                 error_msg = "\n".join(validation_errors)
                 print(f"\n❌ VALIDATION FAILED - DEPLOYMENT BLOCKED:\n{error_msg}\n")
+                
+                # Create detailed error summary for PR comment
+                error_summary = f"Validation failed with {len(validation_errors)} error(s)"
+                if len(validation_errors) == 1:
+                    # Single error - show it directly
+                    error_summary = validation_errors[0]
+                elif len(validation_errors) <= 3:
+                    # Few errors - show all
+                    error_summary = "; ".join(validation_errors)
+                else:
+                    # Many errors - show first 2 and count
+                    error_summary = f"{validation_errors[0]}; {validation_errors[1]}; ... +{len(validation_errors)-2} more"
+                
                 return {
                     'deployment': deployment,
                     'success': False,
-                    'error': f"Validation blocked deployment: {len(validation_errors)} error(s)",
+                    'error': error_summary[:500],  # Limit to 500 chars for PR comment
+                    'error_detail': error_msg,  # Full details for expandable section
                     'output': f"🚫 DEPLOYMENT BLOCKED\n\n{error_msg}",
                     'backend_key': 'unknown',
                     'services': [],
