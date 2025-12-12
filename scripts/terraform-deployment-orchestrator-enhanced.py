@@ -89,7 +89,6 @@ def backup_terraform_state(backend_bucket: str, backend_key: str, backup_reason:
         error_msg = f"Unexpected error during backup: {str(e)}"
         print(f"❌ {error_msg}")
         return False, ""
-    return text
 
 def redact_sensitive_data(text: str) -> str:
     """Redact sensitive information from terraform output for PR comments"""
@@ -914,6 +913,67 @@ class EnhancedTerraformOrchestrator:
         
         return backend_key
 
+    def _auto_migrate_state_if_needed(self, new_backend_key: str, services: List[str], deployment: Dict):
+        """Automatically migrate state from old backend key to new if backend changed.
+        
+        Detects scenarios like:
+        - Single service → Multi-service: s3/.../project/ → multi/.../project/iam-s3/
+        - Resource count change: s3/.../project/bucket1/ → s3/.../project/
+        """
+        backend_bucket = os.environ.get('TERRAFORM_STATE_BUCKET', 'terraform-elb-mdoule-poc')
+        account = deployment.get('account_name')
+        region = deployment.get('region', 'us-east-1')
+        project = deployment.get('project')
+        
+        # Generate potential old backend keys to check
+        old_keys = []
+        
+        if len(services) > 1:
+            # Multi-service now - check if single service states exist
+            for service in services:
+                # Try: service/account/region/project/terraform.tfstate (no resource subfolder)
+                old_keys.append(f"{service}/{account}/{region}/{project}/terraform.tfstate")
+                # Try: service/account/region/project/*/terraform.tfstate (any resource subfolder)
+                # We'll list and check dynamically
+        
+        # Check if any old state exists
+        for old_key in old_keys:
+            try:
+                check_cmd = ["aws", "s3", "ls", f"s3://{backend_bucket}/{old_key}"]
+                result = subprocess.run(check_cmd, capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    print(f"🔍 Found existing state at old location: {old_key}")
+                    print(f"🔄 Migrating to new backend key: {new_backend_key}")
+                    
+                    # Backup old state
+                    success, backup_key = backup_terraform_state(backend_bucket, old_key, "auto-migration")
+                    if not success:
+                        print(f"⚠️  Failed to backup state - skipping migration")
+                        return
+                    
+                    # Copy old state to new location
+                    copy_cmd = [
+                        "aws", "s3", "cp",
+                        f"s3://{backend_bucket}/{old_key}",
+                        f"s3://{backend_bucket}/{new_backend_key}"
+                    ]
+                    
+                    copy_result = subprocess.run(copy_cmd, capture_output=True, text=True)
+                    if copy_result.returncode == 0:
+                        print(f"✅ State migrated successfully!")
+                        print(f"   Old: {old_key}")
+                        print(f"   New: {new_backend_key}")
+                        print(f"   Backup: {backup_key}")
+                        return
+                    else:
+                        print(f"❌ Failed to copy state: {copy_result.stderr}")
+                        return
+                        
+            except Exception as e:
+                debug_print(f"Error checking old state {old_key}: {e}")
+                continue
+
     def _extract_terraform_outputs(self, terraform_output: str, action: str) -> Dict:
         """Extract resource outputs from terraform output for PR comments"""
         outputs = {
@@ -1681,6 +1741,9 @@ Please fix the errors and push to a new branch.
                 f'-backend-config=key={backend_key}',
                 f'-backend-config=region=us-east-1'
             ]
+            
+            # AUTO-MIGRATION: Check if we need to migrate from old backend key
+            self._auto_migrate_state_if_needed(backend_key, services, deployment)
             
             print(f"🔄 Initializing Terraform with backend key: {backend_key}")
             print(f"🔒 State locking enabled via Terraform built-in lockfile (use_lockfile=true)")
