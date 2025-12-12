@@ -178,15 +178,19 @@ variable "iam_users" {
 variable "iam_roles" {
   description = "Map of IAM roles to create"
   type = map(object({
-    name                 = string
-    path                 = optional(string, "/")
-    description          = optional(string)
-    assume_role_policy   = string
-    permissions_boundary = optional(string)
-    max_session_duration = optional(number, 3600)
-    policies             = optional(map(string), {})
-    inline_policies      = optional(map(string), {})
-    tags                 = optional(map(string), {})
+    name                    = string
+    path                    = optional(string, "/")
+    description             = optional(string)
+    assume_role_policy      = string  # Can be JSON string OR file path
+    permissions_boundary    = optional(string)
+    max_session_duration    = optional(number, 3600)
+    policies                = optional(map(string), {})
+    inline_policies         = optional(list(object({
+      name        = string
+      policy      = optional(string, null)
+      policy_file = optional(string, null)
+    })), [])
+    tags                    = optional(map(string), {})
   }))
   default = {}
 }

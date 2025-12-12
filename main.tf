@@ -108,10 +108,22 @@ locals {
     try(var.iam_users, {})
   )
   
-  merged_iam_roles = merge(
+  merged_iam_roles_raw = merge(
     try(local.yaml_config.iam_roles, {}),
     try(var.iam_roles, {})
   )
+  
+  # Process IAM roles: Load policy files and convert to IAM module format
+  merged_iam_roles = {
+    for k, v in local.merged_iam_roles_raw : k => merge(v, {
+      # Load assume_role_policy from file if it's a path
+      assume_role_policy_file = endswith(v.assume_role_policy, ".json") ? v.assume_role_policy : null
+      assume_role_policy      = endswith(v.assume_role_policy, ".json") ? null : v.assume_role_policy
+      
+      # Process inline_policies - keep as-is, IAM module will handle file loading
+      inline_policies = try(v.inline_policies, [])
+    })
+  }
   
   merged_iam_policies = merge(
     try(local.yaml_config.iam_policies, {}),
