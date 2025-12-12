@@ -181,35 +181,46 @@ def validate_policy_json_file(policy_path: Path, working_dir: Path, account_id: 
         errors.append(f"🚫 BLOCKER: Error validating policy {policy_path.name}: {str(e)}")
         return False, warnings, errors
 
-def validate_resource_names_match(policy_path: Path, tfvars_content: str, working_dir: Path) -> List[str]:
+def validate_resource_names_match(policy_path: Path, tfvars_content: str, working_dir: Path) -> Tuple[List[str], List[str]]:
     """
-    CRITICAL: Validate bucket/resource names in policy match tfvars
-    Prevents deployment failures due to mismatched names
+    CRITICAL: Validate resource names in policy match tfvars
+    Prevents deployment failures due to copy-paste errors with mismatched names
+    Returns: (warnings, errors) - errors will BLOCK deployment
     """
     warnings = []
+    errors = []
     
     if not policy_path.is_absolute():
         policy_path = working_dir / policy_path
     
     if not policy_path.exists():
-        return warnings
+        return warnings, errors
     
     try:
         with open(policy_path, 'r') as f:
             policy_data = json.load(f)
         
-        # Extract bucket names from tfvars
-        tfvars_buckets = set()
-        bucket_patterns = [
-            r'bucket_name\s*=\s*"([^"]+)"',
-            r'"([^"]+)"\s*=\s*\{[^}]*bucket',
-        ]
-        for pattern in bucket_patterns:
-            matches = re.findall(pattern, tfvars_content)
-            tfvars_buckets.update(matches)
+        # Extract resource KEY and resource NAME from tfvars
+        # Pattern: "resource-key" = { bucket_name = "actual-bucket-name" }
+        resource_key_pattern = r'"([^"]+)"\s*=\s*\{'
+        resource_keys = re.findall(resource_key_pattern, tfvars_content)
         
-        # Extract bucket names from policy ARNs
-        policy_buckets = set()
+        # Extract actual resource names (bucket_name, function_name, key_alias, etc.)
+        resource_name_patterns = [
+            r'bucket_name\s*=\s*"([^"]+)"',      # S3
+            r'function_name\s*=\s*"([^"]+)"',    # Lambda
+            r'key_alias\s*=\s*"([^"]+)"',        # KMS
+            r'role_name\s*=\s*"([^"]+)"',        # IAM
+            r'policy_name\s*=\s*"([^"]+)"',      # IAM
+        ]
+        
+        actual_names = set()
+        for pattern in resource_name_patterns:
+            matches = re.findall(pattern, tfvars_content)
+            actual_names.update(matches)
+        
+        # Extract resource names from policy ARNs (all AWS services)
+        policy_resources = set()
         statements = policy_data.get('Statement', [])
         if not isinstance(statements, list):
             statements = [statements]
@@ -220,31 +231,48 @@ def validate_resource_names_match(policy_path: Path, tfvars_content: str, workin
                 resources = [resources]
             
             for resource in resources:
-                # Match: arn:aws:s3:::bucket-name or arn:aws:s3:::bucket-name/*
-                bucket_match = re.search(r'arn:aws:s3:::([^/\*]+)', resource)
-                if bucket_match:
-                    policy_buckets.add(bucket_match.group(1))
+                # S3: arn:aws:s3:::bucket-name
+                s3_match = re.search(r'arn:aws:s3:::([^/\*]+)', resource)
+                if s3_match:
+                    policy_resources.add(s3_match.group(1))
+                
+                # KMS: arn:aws:kms:region:account:key/key-id or alias/alias-name
+                kms_match = re.search(r'arn:aws:kms:[^:]*:[^:]*:(?:key/[^/]+|alias/([^/]+))', resource)
+                if kms_match and kms_match.group(1):
+                    policy_resources.add(kms_match.group(1))
+                
+                # IAM: arn:aws:iam::account:role/role-name or policy/policy-name
+                iam_match = re.search(r'arn:aws:iam::[^:]*:(?:role|policy)/([^/\*]+)', resource)
+                if iam_match:
+                    policy_resources.add(iam_match.group(1))
+                
+                # Lambda: arn:aws:lambda:region:account:function:function-name
+                lambda_match = re.search(r'arn:aws:lambda:[^:]*:[^:]*:function:([^:\*]+)', resource)
+                if lambda_match:
+                    policy_resources.add(lambda_match.group(1))
         
-        # Compare names
-        if tfvars_buckets and policy_buckets:
-            # Buckets in policy but not in tfvars
-            unknown = policy_buckets - tfvars_buckets
+        # CRITICAL CHECK: Resource names in policy MUST match tfvars
+        if actual_names and policy_resources:
+            # Resources in policy but NOT in tfvars = BLOCKER
+            unknown = policy_resources - actual_names
             if unknown:
-                warnings.append(
-                    f"⚠️  MISMATCH: Policy {policy_path.name} references buckets NOT in tfvars: {', '.join(unknown)}"
+                errors.append(
+                    f"🚫 BLOCKER: Policy {policy_path.name} references resources NOT in tfvars: {', '.join(unknown)}. "
+                    f"This indicates copy-paste error - update policy file or tfvars!"
                 )
             
-            # Buckets in tfvars but not in policy
-            missing = tfvars_buckets - policy_buckets
+            # Resources in tfvars but NOT in policy = BLOCKER
+            missing = actual_names - policy_resources
             if missing:
-                warnings.append(
-                    f"⚠️  MISMATCH: Tfvars defines buckets NOT in policy {policy_path.name}: {', '.join(missing)}"
+                errors.append(
+                    f"🚫 BLOCKER: Tfvars defines resources NOT in policy {policy_path.name}: {', '.join(missing)}. "
+                    f"Policy file must be updated to match tfvars resource names!"
                 )
     
     except Exception as e:
-        warnings.append(f"⚠️  Error checking resource names in {policy_path.name}: {str(e)}")
+        errors.append(f"🚫 BLOCKER: Error validating resource names in {policy_path.name}: {str(e)}")
     
-    return warnings
+    return warnings, errors
 
 def query_amazon_q_for_validation(tfvars_content: str, policy_content: str, deployment: Dict) -> Tuple[List[str], List[str]]:
     """
@@ -993,14 +1021,15 @@ class EnhancedTerraformOrchestrator:
                     warnings.extend(pol_warnings)
                     errors.extend(pol_errors)
                     
-                    # Validate resource names match
+                    # Validate resource names match - CRITICAL CHECK
                     if is_valid:
-                        name_warnings = validate_resource_names_match(
+                        name_warnings, name_errors = validate_resource_names_match(
                             policy_file,
                             content,
                             self.working_dir
                         )
                         warnings.extend(name_warnings)
+                        errors.extend(name_errors)  # Resource mismatches are BLOCKERS
                     
                     status = "✅" if is_valid else "❌"
                     print(f"   {status} {policy_file.name}: {len(pol_errors)} errors, {len(pol_warnings)} warnings")
