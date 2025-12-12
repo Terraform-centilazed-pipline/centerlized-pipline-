@@ -448,8 +448,30 @@ class EnhancedTerraformOrchestrator:
         self.accounts_config = self._load_accounts_config()
         self.templates_dir = self.project_root / "templates"
         
-        # Service mapping will be dynamically detected from tfvars
-        # No hardcoded service list needed
+        # DYNAMIC SERVICE MAPPING - Maps tfvars keys to AWS service names
+        # Automatically detects services from tfvars file content
+        self.service_mapping = {
+            's3_buckets': 's3',
+            's3_bucket': 's3',
+            'kms_keys': 'kms',
+            'kms_key': 'kms',
+            'iam_roles': 'iam',
+            'iam_policies': 'iam',
+            'iam_users': 'iam',
+            'lambda_functions': 'lambda',
+            'lambda_function': 'lambda',
+            'dynamodb_tables': 'dynamodb',
+            'dynamodb_table': 'dynamodb',
+            'rds_instances': 'rds',
+            'rds_clusters': 'rds',
+            'ec2_instances': 'ec2',
+            'vpc_configs': 'vpc',
+            'security_groups': 'vpc',
+            'sns_topics': 'sns',
+            'sqs_queues': 'sqs',
+            'cloudwatch_alarms': 'cloudwatch',
+            'api_gateways': 'apigateway'
+        }
 
     def _load_accounts_config(self) -> Dict:
         """Load accounts configuration from accounts.yaml"""
