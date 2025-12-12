@@ -3,8 +3,7 @@
 variable "accounts" {
   description = "Account configurations for multi-account deployment"
   type = map(object({
-    id           = string
-    account_id   = string
+    id           = string        # Changed from account_id to id (Terraform standard)
     account_name = string
     environment  = string
     regions      = list(string)
