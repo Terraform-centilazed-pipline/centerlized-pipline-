@@ -335,7 +335,7 @@ def validate_resource_names_match(policy_path: Path, tfvars_content: str, workin
         
         # CRITICAL CHECK: Resource names in policy MUST match tfvars
         if actual_names and policy_resources:
-            # Resources in policy but NOT in tfvars = BLOCKER
+            # Resources in policy but NOT in tfvars = BLOCKER (copy-paste error)
             unknown = policy_resources - actual_names
             if unknown:
                 errors.append(
@@ -343,13 +343,10 @@ def validate_resource_names_match(policy_path: Path, tfvars_content: str, workin
                     f"This indicates copy-paste error - update policy file or tfvars!"
                 )
             
-            # Resources in tfvars but NOT in policy = BLOCKER
-            missing = actual_names - policy_resources
-            if missing:
-                errors.append(
-                    f"🚫 BLOCKER: Tfvars defines resources NOT in policy {policy_path.name}: {', '.join(missing)}. "
-                    f"Policy file must be updated to match tfvars resource names!"
-                )
+            # REMOVED: Don't check if tfvars resources are missing from policy
+            # Different resource types (S3, IAM, Lambda) have different policies
+            # IAM roles don't need to be in S3 bucket policies, etc.
+            # Only validate: policy references → must exist in tfvars
     
     except Exception as e:
         errors.append(f"🚫 BLOCKER: Error validating resource names in {policy_path.name}: {str(e)}")
