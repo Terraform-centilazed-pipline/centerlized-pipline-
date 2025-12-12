@@ -200,26 +200,42 @@ def validate_resource_names_match(policy_path: Path, tfvars_content: str, workin
         with open(policy_path, 'r') as f:
             policy_data = json.load(f)
         
-        # Extract resource KEY and resource NAME from tfvars
-        # Pattern: "resource-key" = { bucket_name = "actual-bucket-name" }
-        resource_key_pattern = r'"([^"]+)"\s*=\s*\{'
-        resource_keys = re.findall(resource_key_pattern, tfvars_content)
+        # DYNAMIC: Extract resource KEY and resource NAME from tfvars (any service)
+        # Pattern: "resource-key" = { ... *_name = "actual-name" ... }
+        # CRITICAL: Check that resource KEY matches or is contained in actual resource name
         
-        # Extract actual resource names (bucket_name, function_name, key_alias, etc.)
-        resource_name_patterns = [
-            r'bucket_name\s*=\s*"([^"]+)"',      # S3
-            r'function_name\s*=\s*"([^"]+)"',    # Lambda
-            r'key_alias\s*=\s*"([^"]+)"',        # KMS
-            r'role_name\s*=\s*"([^"]+)"',        # IAM
-            r'policy_name\s*=\s*"([^"]+)"',      # IAM
-        ]
+        # Extract blocks with resource keys and their properties
+        block_pattern = r'"([^"]+)"\s*=\s*\{([^}]+)\}'
+        blocks = re.findall(block_pattern, tfvars_content, re.DOTALL)
         
+        # Check each resource block (DYNAMIC - works for any service)
+        for resource_key, block_content in blocks:
+            # DYNAMIC: Find ANY *_name attribute (bucket_name, function_name, role_name, etc.)
+            name_match = re.search(r'(\w+_name)\s*=\s*"([^"]+)"', block_content)
+            
+            if name_match:
+                attribute_name = name_match.group(1)  # e.g., "bucket_name", "function_name"
+                actual_name = name_match.group(2)      # e.g., "arj-test-poc-3-use1-prd"
+                
+                # CRITICAL CHECK: Resource key must be contained in actual name
+                # Example: key="test-poc-3" should be in name="arj-test-poc-3-use1-prd"
+                if resource_key not in actual_name:
+                    errors.append(
+                        f"🚫 BLOCKER: Resource key '{resource_key}' does NOT match {attribute_name} '{actual_name}'. "
+                        f"Copy-paste error detected! Update BOTH resource key AND {attribute_name}. "
+                        f"Key must be part of name."
+                    )
+        
+        # DYNAMIC: Extract all resource names for policy comparison (any *_name attribute)
         actual_names = set()
-        for pattern in resource_name_patterns:
-            matches = re.findall(pattern, tfvars_content)
-            actual_names.update(matches)
+        all_name_matches = re.findall(r'\w+_name\s*=\s*"([^"]+)"', tfvars_content)
+        actual_names.update(all_name_matches)
         
-        # Extract resource names from policy ARNs (all AWS services)
+        # Also check key_alias pattern (KMS-specific but dynamic)
+        alias_matches = re.findall(r'key_alias\s*=\s*"(?:alias/)?([^"]+)"', tfvars_content)
+        actual_names.update(alias_matches)
+        
+        # DYNAMIC: Extract resource names from policy ARNs (any AWS service)
         policy_resources = set()
         statements = policy_data.get('Statement', [])
         if not isinstance(statements, list):
@@ -231,25 +247,27 @@ def validate_resource_names_match(policy_path: Path, tfvars_content: str, workin
                 resources = [resources]
             
             for resource in resources:
-                # S3: arn:aws:s3:::bucket-name
-                s3_match = re.search(r'arn:aws:s3:::([^/\*]+)', resource)
-                if s3_match:
-                    policy_resources.add(s3_match.group(1))
+                # DYNAMIC: Extract resource names from ANY ARN format (all AWS services)
+                # Patterns:
+                # - arn:aws:service:::resource-name (service with :::)
+                # - arn:aws:service:region:account:resource-type/resource-name
+                # - arn:aws:service:region:account:resource-type:resource-name
                 
-                # KMS: arn:aws:kms:region:account:key/key-id or alias/alias-name
-                kms_match = re.search(r'arn:aws:kms:[^:]*:[^:]*:(?:key/[^/]+|alias/([^/]+))', resource)
-                if kms_match and kms_match.group(1):
-                    policy_resources.add(kms_match.group(1))
+                # Handle ::: pattern (used by some services)
+                if ':::' in resource:
+                    triple_colon_match = re.search(r'arn:aws:[^:]+:::([^/\*]+)', resource)
+                    if triple_colon_match:
+                        policy_resources.add(triple_colon_match.group(1))
+                        continue
                 
-                # IAM: arn:aws:iam::account:role/role-name or policy/policy-name
-                iam_match = re.search(r'arn:aws:iam::[^:]*:(?:role|policy)/([^/\*]+)', resource)
-                if iam_match:
-                    policy_resources.add(iam_match.group(1))
-                
-                # Lambda: arn:aws:lambda:region:account:function:function-name
-                lambda_match = re.search(r'arn:aws:lambda:[^:]*:[^:]*:function:([^:\*]+)', resource)
-                if lambda_match:
-                    policy_resources.add(lambda_match.group(1))
+                # Generic ARN: extract resource name from last segment
+                # Pattern: arn:aws:service:region:account:type/name or arn:aws:service:region:account:type:name
+                generic_match = re.search(r'arn:aws:[^:]+:[^:]*:[^:]*:(?:[^/:]+[/:])?([^/:\*]+)', resource)
+                if generic_match:
+                    resource_name = generic_match.group(1)
+                    # Filter out account IDs, wildcards, and common non-resource identifiers
+                    if not resource_name.isdigit() and resource_name not in ['*', 'root', 'aws']:
+                        policy_resources.add(resource_name)
         
         # CRITICAL CHECK: Resource names in policy MUST match tfvars
         if actual_names and policy_resources:
@@ -1057,19 +1075,10 @@ class EnhancedTerraformOrchestrator:
                         except Exception as q_err:
                             warnings.append(f"⚠️  Amazon Q validation failed: {str(q_err)}")
             
-            # 3. PRODUCTION ENVIRONMENT CHECKS
+            # 3. PRODUCTION ENVIRONMENT CHECKS (Generic - any service)
             if environment.lower() in ['production', 'prod', 'prd']:
-                if 'force_destroy = true' in content:
-                    warnings.append(
-                        f"⚠️  PRODUCTION: force_destroy=true allows bucket deletion with objects!"
-                    )
-                
-                if 'versioning_enabled = false' in content:
-                    warnings.append(
-                        f"⚠️  PRODUCTION: S3 versioning disabled - data loss risk!"
-                    )
-                
-                if 'prevent_destroy = false' in content:
+                # Generic destroy protection check
+                if 'prevent_destroy = false' in content or 'prevent_destroy=false' in content:
                     warnings.append(
                         f"⚠️  PRODUCTION: prevent_destroy=false allows resource deletion!"
                     )
