@@ -50,18 +50,15 @@ jobs:
             echo "🎯 Target Branch: ${{ github.event.client_payload.base_ref }}"
           elif [[ "${{ github.event.client_payload.action }}" == "validate" ]]; then
             echo "════════════════════════════════════════════════════════════════"
-            echo "🔍 MODE: OPA VALIDATION"
+            echo "🔍 MODE: OPA VALIDATION & PLAN"
             echo "════════════════════════════════════════════════════════════════"
             echo "👤 PR Author: ${{ github.event.client_payload.pr_author }}"
-          elif [[ "${{ github.event.client_payload.action }}" == "merge" ]]; then
-            echo "════════════════════════════════════════════════════════════════"
-            echo "✅ MODE: PR MERGE CHECK"
-            echo "════════════════════════════════════════════════════════════════"
-            echo "✅ Approved by: @${{ github.event.client_payload.approver }}"
           else
             echo "════════════════════════════════════════════════════════════════"
-            echo "🔍 DEFAULT MODE - Validation & Approval Wait"
+            echo "⚠️  UNKNOWN ACTION: ${{ github.event.client_payload.action }}"
             echo "════════════════════════════════════════════════════════════════"
+            echo "Controller only handles: validate, apply"
+            echo "Merge is handled by dev workflow"
           fi
           
           echo ""
@@ -1025,23 +1022,83 @@ jobs:
               body: comment
             });
             
+            // Create/update labels with proper colors
+            const owner = '${{ github.event.client_payload.source_owner }}';
+            const repo = '${{ github.event.client_payload.source_repo }}';
+            
+            const labelDefinitions = [
+              { name: 'opa-passed', color: '0E8A16', description: '✅ OPA validation passed - deployment approved' },
+              { name: 'opa-failed', color: 'B60205', description: '❌ OPA validation failed - needs fixes' },
+              { name: 'ready-for-review', color: '0E8A16', description: '✅ Ready for team review' },
+              { name: 'needs-fixes', color: 'D93F0B', description: '⚠️ Issues need to be addressed' },
+              { name: 'validated', color: '0E8A16', description: '✅ Pre-deployment validation passed' },
+              { name: 'blocked', color: 'B60205', description: '🚫 Deployment blocked by validation' },
+              { name: 'production', color: 'FBCA04', description: '⚠️ Production environment deployment' },
+              { name: 'drift-detected', color: 'D93F0B', description: '⚠️ Infrastructure drift detected' }
+            ];
+            
+            // Create labels if they don't exist (ignore errors if they already exist)
+            for (const label of labelDefinitions) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: owner,
+                  repo: repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description
+                });
+                console.log(`✅ Created label: ${label.name} with color #${label.color}`);
+              } catch (error) {
+                if (error.status === 422) {
+                  // Label already exists, update it
+                  try {
+                    await github.rest.issues.updateLabel({
+                      owner: owner,
+                      repo: repo,
+                      name: label.name,
+                      color: label.color,
+                      description: label.description
+                    });
+                    console.log(`🔄 Updated label: ${label.name} with color #${label.color}`);
+                  } catch (updateError) {
+                    console.log(`⚠️ Could not update label ${label.name}: ${updateError.message}`);
+                  }
+                } else {
+                  console.log(`⚠️ Could not create label ${label.name}: ${error.message}`);
+                }
+              }
+            }
+            
             // Add labels based on OPA status
             if (validation === 'passed') {
               await github.rest.issues.addLabels({
-                owner: '${{ github.event.client_payload.source_owner }}',
-                repo: '${{ github.event.client_payload.source_repo }}',
+                owner: owner,
+                repo: repo,
                 issue_number: ${{ github.event.client_payload.pr_number }},
-                labels: ['opa-passed', 'ready-for-review']
+                labels: ['opa-passed', 'ready-for-review', 'validated']
               });
-              console.log('✅ Added labels: opa-passed, ready-for-review');
+              console.log('✅ Added labels: opa-passed, ready-for-review, validated');
             } else if (validation === 'failed') {
               await github.rest.issues.addLabels({
-                owner: '${{ github.event.client_payload.source_owner }}',
-                repo: '${{ github.event.client_payload.source_repo }}',
+                owner: owner,
+                repo: repo,
                 issue_number: ${{ github.event.client_payload.pr_number }},
-                labels: ['opa-failed', 'needs-fixes']
+                labels: ['opa-failed', 'needs-fixes', 'blocked']
               });
-              console.log('❌ Added labels: opa-failed, needs-fixes');
+              console.log('❌ Added labels: opa-failed, needs-fixes, blocked');
+            }
+            
+            // Add production label if production environment
+            const isProduction = '${{ github.event.client_payload.environment }}' === 'production' || 
+                                '${{ github.event.client_payload.environment }}' === 'prod';
+            if (isProduction) {
+              await github.rest.issues.addLabels({
+                owner: owner,
+                repo: repo,
+                issue_number: ${{ github.event.client_payload.pr_number }},
+                labels: ['production']
+              });
+              console.log('⚠️ Added production label');
             }
 
       # ===== NO MERGE HANDLING IN CONTROLLER =====
