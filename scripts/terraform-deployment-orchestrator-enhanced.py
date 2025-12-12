@@ -838,7 +838,12 @@ class EnhancedTerraformOrchestrator:
             seen = set()
             for name in resource_names:
                 clean_name = name.strip().replace(' ', '-').lower()
-                if clean_name and clean_name not in seen and len(clean_name) < 50:
+                # Skip account IDs (all digits), common metadata keys, and invalid names
+                if (clean_name and 
+                    clean_name not in seen and 
+                    len(clean_name) < 50 and
+                    not clean_name.isdigit() and  # Skip account IDs like "802860742843"
+                    clean_name not in ['accounts', 'account', 'common_tags', 'tags']):
                     unique_names.append(clean_name)
                     seen.add(clean_name)
             
