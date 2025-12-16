@@ -33,10 +33,47 @@ try:
 except ImportError:
     yaml = None
 
-# Version constants
+# =============================================================================
+# CONFIGURATION - All values can be overridden via environment variables
+# =============================================================================
+
+# Version
 ORCHESTRATOR_VERSION = "2.0"
 
-DEBUG = True
+# Debug mode
+DEBUG = os.environ.get('ORCHESTRATOR_DEBUG', 'true').lower() == 'true'
+
+# AWS Configuration
+TERRAFORM_STATE_BUCKET = os.environ.get('TERRAFORM_STATE_BUCKET', 'terraform-elb-mdoule-poc')
+TERRAFORM_ASSUME_ROLE = os.environ.get('TERRAFORM_ASSUME_ROLE', 'TerraformExecutionRole')
+AWS_DEFAULT_REGION = os.environ.get('AWS_REGION', 'us-east-1')
+
+# Backend Key Pattern Configuration
+# Pattern: {service_part}/{account_name}/{region}/{project}/{resource_path}/terraform.tfstate
+# Examples:
+#   Single service: s3/arj-wkld-a-prd/us-east-1/test-poc-3/bucket-name/terraform.tfstate
+#   Multi service:  multi/arj-wkld-a-prd/us-east-1/test-poc-3/iam-s3/terraform.tfstate
+BACKEND_KEY_PATTERN = os.environ.get('BACKEND_KEY_PATTERN', '{service_part}/{account_name}/{region}/{project}/{resource_path}/terraform.tfstate')
+BACKEND_KEY_MULTI_SERVICE_PREFIX = os.environ.get('BACKEND_KEY_MULTI_SERVICE_PREFIX', 'multi')
+
+# State Migration Configuration
+STATE_BACKUP_PREFIX = os.environ.get('STATE_BACKUP_PREFIX', 'backups')
+STATE_BACKUP_ENABLED = os.environ.get('STATE_BACKUP_ENABLED', 'true').lower() == 'true'
+STATE_AUTO_MIGRATION_ENABLED = os.environ.get('STATE_AUTO_MIGRATION_ENABLED', 'true').lower() == 'true'
+STATE_OLD_LOCATION_CLEANUP = os.environ.get('STATE_OLD_LOCATION_CLEANUP', 'true').lower() == 'true'
+
+# Audit Logging Configuration
+AUDIT_LOG_ENABLED = os.environ.get('AUDIT_LOG_ENABLED', 'true').lower() == 'true'
+AUDIT_LOG_BUCKET = os.environ.get('AUDIT_LOG_BUCKET', TERRAFORM_STATE_BUCKET)  # Default to state bucket
+AUDIT_LOG_PREFIX = os.environ.get('AUDIT_LOG_PREFIX', 'audit-logs')
+
+# Terraform Configuration
+TERRAFORM_LOCK_ENABLED = os.environ.get('TERRAFORM_LOCK_ENABLED', 'true').lower() == 'true'
+TERRAFORM_LOCK_TABLE = os.environ.get('TERRAFORM_LOCK_TABLE', None)  # DynamoDB table for state locking
+
+# Execution Configuration
+MAX_PARALLEL_DEPLOYMENTS = int(os.environ.get('MAX_PARALLEL_DEPLOYMENTS', '0'))  # 0 = auto-detect CPU count
+DEPLOYMENT_TIMEOUT_SECONDS = int(os.environ.get('DEPLOYMENT_TIMEOUT_SECONDS', '3600'))  # 1 hour default
 
 def debug_print(msg):
     if DEBUG:
@@ -120,7 +157,7 @@ def backup_terraform_state(backend_bucket: str, backend_key: str, account_id: st
         Backup:   backups/2025-12-12_14-30-00_migration/s3/arj-wkld-a-prd/us-east-1/test-poc-3-s3/terraform.tfstate
     """
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    backup_key = f"backups/{timestamp}_{backup_reason}/{backend_key}"
+    backup_key = f"{STATE_BACKUP_PREFIX}/{timestamp}_{backup_reason}/{backend_key}"
     
     try:
         # Copy state file to backup location
@@ -967,7 +1004,7 @@ class EnhancedTerraformOrchestrator:
             # Examples:
             # - S3 + IAM: multi/.../project/iam-s3/terraform.tfstate
             # - S3 + Lambda + IAM: multi/.../project/iam-lambda-s3/terraform.tfstate
-            service_part = "multi"
+            service_part = BACKEND_KEY_MULTI_SERVICE_PREFIX
             resource_path = "-".join(sorted(services))
         
         # Generate backend key based on resource path
@@ -993,10 +1030,10 @@ class EnhancedTerraformOrchestrator:
         - Single service → Multi-service: s3/.../project/ → multi/.../project/iam-s3/
         - Resource count change: s3/.../project/bucket1/ → s3/.../project/
         """
-        backend_bucket = os.environ.get('TERRAFORM_STATE_BUCKET', 'terraform-elb-mdoule-poc')
+        backend_bucket = TERRAFORM_STATE_BUCKET
         account = deployment.get('account_name')
         account_id = deployment.get('account_id')  # Get account ID for role assumption
-        region = deployment.get('region', 'us-east-1')
+        region = deployment.get('region', AWS_DEFAULT_REGION)
         project = deployment.get('project')
         
         # Generate potential old backend keys to check
@@ -1341,11 +1378,14 @@ class EnhancedTerraformOrchestrator:
             import boto3
             from datetime import datetime
             
+            if not AUDIT_LOG_ENABLED:
+                return True
+            
             s3 = boto3.client('s3')
-            bucket = 'terraform-elb-mdoule-poc'
+            bucket = AUDIT_LOG_BUCKET
             
             timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-            log_key = f"audit-logs/{deployment['account_name']}/{deployment['project']}/{action}-{timestamp}.json"
+            log_key = f"{AUDIT_LOG_PREFIX}/{deployment['account_name']}/{deployment['project']}/{action}-{timestamp}.json"
             
             audit_data = {
                 'timestamp': datetime.now().isoformat(),
