@@ -485,6 +485,24 @@ class EnhancedTerraformOrchestrator:
         self.accounts_config = self._load_accounts_config()
         self.templates_dir = self.project_root / "templates"
         
+        # RESOURCE PROTECTION MAP - Current modules: S3, KMS, IAM
+        # Defines how to handle failures for each resource type
+        self.resource_protection = {
+            # S3 - CRITICAL (has data)
+            'aws_s3_bucket': {'level': 'CRITICAL', 'on_failure': 'KEEP', 'reason': 'Contains data'},
+            'aws_s3_bucket_policy': {'level': 'LOW', 'on_failure': 'RETRY', 'reason': 'Bucket works without policy'},
+            'aws_s3_bucket_versioning': {'level': 'LOW', 'on_failure': 'RETRY', 'reason': 'Can enable later'},
+            'aws_s3_bucket_server_side_encryption_configuration': {'level': 'MEDIUM', 'on_failure': 'RETRY', 'reason': 'Fix encryption config'},
+            'aws_s3_bucket_public_access_block': {'level': 'LOW', 'on_failure': 'RETRY', 'reason': 'Can apply later'},
+            # KMS - CRITICAL (encryption keys)
+            'aws_kms_key': {'level': 'CRITICAL', 'on_failure': 'NEVER_DESTROY', 'reason': 'All encrypted data depends on this'},
+            'aws_kms_alias': {'level': 'LOW', 'on_failure': 'RETRY', 'reason': 'Key works without alias'},
+            # IAM - LOW (just permissions)
+            'aws_iam_role': {'level': 'LOW', 'on_failure': 'KEEP', 'reason': 'No data, but may be in use'},
+            'aws_iam_role_policy': {'level': 'LOW', 'on_failure': 'RETRY', 'reason': 'Role works, attach policy later'},
+            'aws_iam_policy': {'level': 'LOW', 'on_failure': 'RETRY', 'reason': 'Safe to recreate'}
+        }
+        
         # DYNAMIC SERVICE MAPPING - Maps tfvars keys to AWS service names
         # Automatically detects services from tfvars file content
         self.service_mapping = {
@@ -1014,11 +1032,15 @@ class EnhancedTerraformOrchestrator:
                     resource_name = self._extract_resource_name(line)
                     if resource_name:
                         outputs['resources_modified'].append(resource_name)
-                elif 'will be destroyed' in line:
+                elif 'will be destroyed' in line or 'must be replaced' in line:
                     current_section = 'destroyed'
                     resource_name = self._extract_resource_name(line)
                     if resource_name:
-                        outputs['resources_destroyed'].append(resource_name)
+                        # Add destruction reason if it's a replacement
+                        if 'must be replaced' in line:
+                            outputs['resources_destroyed'].append(f"{resource_name} (replacement)")
+                        else:
+                            outputs['resources_destroyed'].append(resource_name)
                 
                 # Extract specific resource details (ARNs, names, etc.)
                 if action == 'apply':
@@ -1033,10 +1055,21 @@ class EnhancedTerraformOrchestrator:
 
     def _extract_resource_name(self, line: str) -> Optional[str]:
         """Extract resource name from terraform output line"""
-        # Pattern: # aws_s3_bucket.example will be created
+        # Pattern 1: # aws_s3_bucket.example will be created
         match = re.search(r'#\s+(\S+)\s+will be', line)
         if match:
             return match.group(1)
+        
+        # Pattern 2: # aws_s3_bucket.example must be replaced
+        match = re.search(r'#\s+(\S+)\s+must be', line)
+        if match:
+            return match.group(1)
+        
+        # Pattern 3: aws_s3_bucket.example (resource in plan)
+        match = re.search(r'(aws_[a-z0-9_]+\.[a-z0-9_\-\[\]"]+)', line)
+        if match:
+            return match.group(1)
+        
         return None
     
     def _detect_resource_deletions(self, plan_output: str, environment: str) -> Tuple[List[str], List[str]]:
@@ -1063,6 +1096,40 @@ class EnhancedTerraformOrchestrator:
                     f"⚠️  Resource Deletion: {count} resource(s) will be destroyed/replaced. "
                     f"Review carefully: {', '.join(deletion_lines[:3])}"
                 )
+        
+        # CRITICAL: Detect KMS key changes on S3 buckets - HIGH ALERT
+        kms_changes = []
+        in_encryption_block = False
+        current_resource = None
+        
+        for line in plan_output.split('\n'):
+            # Detect encryption configuration resource
+            if 'aws_s3_bucket_server_side_encryption_configuration' in line:
+                in_encryption_block = True
+                current_resource = line.strip()
+            
+            # Detect KMS key ID changes
+            if in_encryption_block and 'kms_master_key_id' in line:
+                if '~' in line or '->' in line or 'will be updated' in line.lower():
+                    kms_changes.append(line.strip())
+                    
+                    # Add HIGH ALERT warning (not blocking - let it proceed with warning)
+                    warnings.append(
+                        f"🚨 HIGH ALERT: KMS KEY CHANGE DETECTED on S3 bucket!\n"
+                        f"   Resource: {current_resource}\n"
+                        f"   Change: {line.strip()}\n"
+                        f"   ⚠️  CRITICAL: Existing objects encrypted with old key will become UNREADABLE if old key is deleted\n"
+                        f"   📋 Action Required BEFORE deleting old key:\n"
+                        f"      1. Re-encrypt all S3 objects with new key\n"
+                        f"      2. Command: aws s3 cp s3://bucket-name/ s3://bucket-name/ --recursive --sse aws:kms --sse-kms-key-id NEW-KEY --metadata-directive REPLACE\n"
+                        f"      3. Verify all objects re-encrypted\n"
+                        f"      4. Keep old KMS key active for 30+ days minimum\n"
+                        f"   💡 Or: Keep both KMS keys active indefinitely"
+                    )
+            
+            # Exit encryption block
+            if in_encryption_block and (line.strip() == '}' or 'resource "' in line):
+                in_encryption_block = False
         
         return warnings, errors
     
@@ -1128,6 +1195,24 @@ class EnhancedTerraformOrchestrator:
         except Exception as e:
             print(f"⚠️  State backup failed: {e}")
             return False, str(e)
+    
+    def _verify_state_file_integrity(self, deployment_workspace: Path) -> bool:
+        """Check if state file is valid and not corrupted"""
+        try:
+            # Try to list resources from state
+            result = self._run_terraform_command(['state', 'list'], deployment_workspace)
+            
+            if result['returncode'] == 0:
+                # State file is readable and valid
+                return True
+            else:
+                # State file corrupted or missing
+                print(f"⚠️  State file integrity check failed: {result.get('stderr', 'unknown error')}")
+                return False
+                
+        except Exception as e:
+            print(f"⚠️  State file integrity check error: {e}")
+            return False
     
     def _rollback_state_file(self, deployment_name: str) -> bool:
         """Rollback to previous state file if apply fails"""
@@ -1457,6 +1542,157 @@ Please fix the errors and push to a new branch.
 **Services:** {', '.join(services) if services else 'None detected'}
 **Action:** {result.get('action', 'unknown').title()}
 **Orchestrator Version:** v{orchestrator_ver}
+
+"""
+        
+        # CHECK FOR RESOURCE DESTRUCTION - HIGH PRIORITY ALERT
+        if outputs.get('resources_destroyed'):
+            destroyed_resources = outputs['resources_destroyed']
+            
+            # Classify destroyed resources by protection level
+            critical_resources = []
+            normal_resources = []
+            
+            for resource in destroyed_resources:
+                resource_type = resource.split('.')[0] if '.' in resource else resource
+                protection = self.resource_protection.get(resource_type, {})
+                level = protection.get('level', 'MEDIUM')
+                
+                if level == 'CRITICAL':
+                    critical_resources.append(resource)
+                else:
+                    normal_resources.append(resource)
+            
+            comment += """
+---
+
+## 🚨 HIGH ALERT: RESOURCE DESTRUCTION DETECTED
+
+"""
+            
+            if critical_resources:
+                comment += f"""
+### ⚠️ CRITICAL RESOURCES WILL BE DESTROYED ({len(critical_resources)})
+
+**These resources contain DATA and CANNOT be recovered once destroyed:**
+
+"""
+                for resource in critical_resources:
+                    resource_type = resource.split('.')[0] if '.' in resource else resource
+                    protection = self.resource_protection.get(resource_type, {})
+                    reason = protection.get('reason', 'Contains important data')
+                    comment += f"- 🔴 **`{resource}`**\n"
+                    comment += f"  - Type: `{resource_type}`\n"
+                    comment += f"  - Risk: {reason}\n\n"
+                
+                comment += """
+### 🛑 ACTION REQUIRED BEFORE PROCEEDING:
+
+1. **Verify this is intentional** - Confirm you want to destroy these resources
+2. **Backup data if needed** - For S3: download objects, For RDS: create snapshot
+3. **Check dependencies** - Ensure no applications are using these resources
+4. **Get approval** - Production deletions require team lead sign-off
+5. **Document reason** - Add comment explaining why these resources are being destroyed
+
+"""
+            
+            if normal_resources:
+                comment += f"""
+### ⚠️ OTHER RESOURCES WILL BE DESTROYED ({len(normal_resources)})
+
+**These resources will be destroyed (safe to recreate):**
+
+"""
+                for resource in normal_resources[:10]:  # Limit to 10
+                    comment += f"- ⚠️ `{resource}`\n"
+                
+                if len(normal_resources) > 10:
+                    comment += f"\n... and {len(normal_resources) - 10} more resources\n"
+                
+                comment += "\n"
+            
+            # Summary and decision
+            comment += f"""
+### 📊 Destruction Summary:
+
+| Category | Count | Risk Level |
+|----------|-------|------------|
+| Critical Resources (with data) | {len(critical_resources)} | 🔴 HIGH |
+| Standard Resources (config only) | {len(normal_resources)} | 🟡 MEDIUM |
+| **Total Resources to Destroy** | **{len(destroyed_resources)}** | |
+
+### 🎯 Deployment Decision:
+
+"""
+            
+            if critical_resources:
+                comment += """
+- 🛑 **STOP if unexpected** - Critical resources contain data
+- ⚠️ **Proceed only if intentional** - Ensure backups exist
+- 📋 **Required: Approval from team lead** for production
+- 💾 **Backup completed?** Verify before proceeding
+
+"""
+            else:
+                comment += """
+- ✅ **Safe to proceed** - No critical data resources affected
+- ⚠️ **Review list above** - Confirm expected resources
+- 📋 **Non-production OK** - Standard resources can be recreated
+
+"""
+            
+            comment += "---\n\n"
+        
+        # CHECK FOR HIGH ALERT KMS KEY CHANGES
+        kms_key_change_warnings = [w for w in val_warnings if '🚨 HIGH ALERT: KMS KEY CHANGE' in w]
+        if kms_key_change_warnings:
+            comment += """
+---
+
+## 🚨 HIGH ALERT: KMS ENCRYPTION KEY CHANGE DETECTED
+
+"""
+            for kms_warning in kms_key_change_warnings:
+                comment += f"```\n{kms_warning}\n```\n\n"
+            
+            comment += """
+### ⚠️ CRITICAL RISK - READ BEFORE PROCEEDING
+
+**What This Means:**
+- S3 bucket encryption key is being changed
+- **Existing objects** will remain encrypted with the **OLD key**
+- **New objects** will be encrypted with the **NEW key**
+- If you delete the OLD KMS key → **existing objects become UNREADABLE** → **DATA LOSS**
+
+### ✅ Safe Migration Steps (REQUIRED):
+
+1. **Re-encrypt all existing objects FIRST:**
+   ```bash
+   # Get bucket name from plan above
+   aws s3 cp s3://BUCKET-NAME/ s3://BUCKET-NAME/ \\
+     --recursive \\
+     --sse aws:kms \\
+     --sse-kms-key-id NEW-KEY-ARN \\
+     --metadata-directive REPLACE
+   ```
+
+2. **Verify all objects re-encrypted:**
+   ```bash
+   # Check object encryption
+   aws s3api head-object --bucket BUCKET-NAME --key OBJECT-KEY
+   ```
+
+3. **Wait 30+ days minimum** before considering deletion of old KMS key
+
+4. **OR: Keep both keys active indefinitely** (safest option)
+
+### 📋 Deployment Decision:
+
+- ✅ **Safe to proceed** if you plan to keep BOTH keys active
+- ⚠️ **Proceed with caution** if you need to migrate keys - follow steps above
+- 🛑 **Stop if unsure** - consult with security/platform team
+
+---
 
 """
         
@@ -1844,16 +2080,46 @@ Please fix the errors and push to a new branch.
             
             result = self._run_terraform_command(cmd, deployment_workspace)
             
-            # ROLLBACK ON APPLY FAILURE
+            # SMART ROLLBACK - Only if state file is corrupted
             if action == "apply" and result['returncode'] != 0:
-                print(f"\n❌ Apply failed! Attempting automatic rollback...")
-                rollback_success = self._rollback_state_file(deployment_name)
-                if rollback_success:
-                    print(f"✅ State file rolled back to previous version")
-                    result['output'] += f"\n\n⚠️ ROLLBACK PERFORMED: State file restored from backup due to apply failure"
+                print(f"\n❌ Apply failed! Analyzing state file...")
+                
+                # Check if state file is still valid
+                state_valid = self._verify_state_file_integrity(deployment_workspace)
+                
+                if state_valid:
+                    # State file is correct - Terraform already tracked everything properly
+                    print(f"✅ State file is accurate - Terraform tracked all successful resources")
+                    print(f"ℹ️  No rollback needed - state matches AWS reality")
+                    print(f"\n💡 Next Steps:")
+                    print(f"   1. Review the error above")
+                    print(f"   2. Fix the configuration issue")
+                    print(f"   3. Re-run terraform apply")
+                    print(f"   4. Only failed resources will be retried")
+                    
+                    result['output'] += (
+                        f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ STATE FILE STATUS: VALID\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Terraform successfully tracked all resources that were created.\n"
+                        f"No rollback necessary - state file matches AWS reality.\n\n"
+                        f"What this means:\n"
+                        f"  • Successfully created resources are tracked in state\n"
+                        f"  • Failed resources are NOT in state (correct behavior)\n"
+                        f"  • Fix the error and re-run apply\n"
+                        f"  • Terraform will only retry the failed resources\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    )
                 else:
-                    print(f"⚠️ Rollback failed - manual intervention may be required")
-                    result['output'] += f"\n\n⚠️ ROLLBACK FAILED: Manual state file recovery may be required"
+                    # State file corrupted - need to rollback
+                    print(f"⚠️  State file is CORRUPTED! Attempting rollback...")
+                    rollback_success = self._rollback_state_file(deployment_name)
+                    if rollback_success:
+                        print(f"✅ State file restored from backup")
+                        result['output'] += f"\n\n⚠️ ROLLBACK PERFORMED: State file was corrupted and restored from backup"
+                    else:
+                        print(f"❌ CRITICAL: State file corrupted and backup failed!")
+                        result['output'] += f"\n\n❌ CRITICAL: State file corrupted and rollback failed - manual recovery required"
             
             # Determine success based on action and exit code
             if action == "plan":

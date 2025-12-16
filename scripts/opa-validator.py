@@ -37,8 +37,13 @@ class OPAValidator:
         self.plans_dir = Path(plans_dir)
         self.debug = debug
         
+        # Auto-detect deployment directory from workspace structure
+        self.deployment_dir = self._detect_deployment_directory()
+        
         if debug:
             logger.setLevel(logging.DEBUG)
+            if self.deployment_dir:
+                logger.debug(f"📁 Detected deployment directory: {self.deployment_dir}")
         
         # Validate directories exist
         if not self.opa_policies_dir.exists():
@@ -93,12 +98,14 @@ class OPAValidator:
                 'file_size': plan_file.stat().st_size,
                 'total_resources': len(resource_changes),
                 'resource_types': {},
-                'actions': {}
+                'actions': {},
+                'resource_map': {}  # Map resource addresses to additional context
             }
             
-            # Count resource types and actions
+            # Count resource types and actions, build resource map
             for resource in resource_changes:
                 resource_type = resource.get('type', 'unknown')
+                resource_address = resource.get('address', 'unknown')
                 actions = resource.get('change', {}).get('actions', [])
                 
                 # Count resource types
@@ -107,6 +114,14 @@ class OPAValidator:
                 # Count actions
                 for action in actions:
                     plan_info['actions'][action] = plan_info['actions'].get(action, 0) + 1
+                
+                # Build resource map with context info
+                resource_name = self._extract_resource_name(resource_address, resource.get('change', {}).get('after', {}))
+                plan_info['resource_map'][resource_address] = {
+                    'type': resource_type,
+                    'name': resource_name,
+                    'actions': actions
+                }
             
             logger.info(f"   📊 File size: {plan_info['file_size']:,} bytes")
             logger.info(f"   📊 Total resources: {plan_info['total_resources']}")
@@ -120,6 +135,75 @@ class OPAValidator:
         except Exception as e:
             logger.error(f"❌ Error analyzing plan {plan_file.name}: {e}")
             return {'file_name': plan_file.name, 'error': str(e)}
+    
+    def _extract_resource_name(self, address: str, resource_config: dict) -> str:
+        """Extract human-readable resource name from address or config"""
+        # Try to get resource name from common fields
+        name_fields = ['name', 'bucket', 'id', 'arn', 'key_id', 'role_name', 'policy_name']
+        for field in name_fields:
+            if field in resource_config and resource_config[field]:
+                return str(resource_config[field])
+        
+        # Fallback to extracting from address (e.g., "module.s3.aws_s3_bucket.this[0]" -> "this")
+        if address:
+            parts = address.split('.')
+            if len(parts) >= 2:
+                # Get the last part and remove array indices
+                resource_part = parts[-1].split('[')[0]
+                return resource_part
+        
+        return 'unknown'
+    
+    def _detect_deployment_directory(self) -> str:
+        """
+        Detect deployment directory from workspace structure.
+        Searches parent directories for common deployment folder patterns.
+        """
+        # Common deployment directory patterns
+        patterns = ['dev-deployment', 'deployment', 'deployments', 'terraform', 'infrastructure', 'infra']
+        
+        # Start from plans_dir parent and search up
+        search_paths = [
+            self.plans_dir.parent,  # One level up
+            self.plans_dir.parent.parent,  # Two levels up
+            self.plans_dir.parent.parent.parent,  # Three levels up (workspace root)
+        ]
+        
+        for search_path in search_paths:
+            if not search_path.exists():
+                continue
+                
+            # Check for deployment directories
+            for pattern in patterns:
+                deploy_path = search_path / pattern
+                if deploy_path.exists() and deploy_path.is_dir():
+                    # Return relative path from workspace perspective
+                    try:
+                        # Try to get relative path from common root
+                        return pattern
+                    except ValueError:
+                        return pattern
+            
+            # Also check if current directory name matches pattern
+            if search_path.name in patterns:
+                return search_path.name
+        
+        # Default fallback
+        return 'deployment'
+    
+    def _extract_source_file_from_plan_name(self, plan_name: str) -> str:
+        """
+        Extract source file path from plan name.
+        Example: 'test-poc-3.json' -> 'dev-deployment/**/test-poc-3.tfvars'
+        Uses dynamically detected deployment directory.
+        """
+        # Remove .json extension
+        base_name = plan_name.replace('.json', '')
+        
+        # Use detected deployment directory (dynamic, not hardcoded)
+        # Pattern: {deployment-dir}/**/base-name.tfvars
+        # The ** allows searching in subdirectories (e.g., S3/test-poc-3/, IAM/role-1/, etc.)
+        return f"{self.deployment_dir}/**/{base_name}.tfvars"
     
     def run_opa_command(self, command: List[str], input_file: Optional[Path] = None) -> Dict[str, Any]:
         """Run an OPA command and return the result"""
@@ -191,7 +275,7 @@ class OPAValidator:
         logger.info(f"   ℹ️ No specific services detected")
         return []
     
-    def validate_plan(self, plan_file: Path) -> Dict[str, Any]:
+    def validate_plan(self, plan_file: Path, plan_info: Dict[str, Any] = None) -> Dict[str, Any]:
         """Validate a single plan with OPA policies"""
         logger.info(f"🛡️ Validating {plan_file.name} with OPA policies...")
         
@@ -218,6 +302,7 @@ class OPAValidator:
         # Parse violations
         violations = []
         violations_by_severity = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+        resource_map = plan_info.get('resource_map', {}) if plan_info else {}
         
         try:
             violations_data = result['data']['result'][0]['expressions'][0]['value']
@@ -227,6 +312,16 @@ class OPAValidator:
                     try:
                         violation = json.loads(violation_key)
                         if isinstance(violation, dict):
+                            # Enhance violation with additional context
+                            resource_address = violation.get('resource', '')
+                            if resource_address and resource_address in resource_map:
+                                resource_info = resource_map[resource_address]
+                                violation['resource_name'] = resource_info['name']
+                                violation['resource_type_readable'] = resource_info['type'].replace('aws_', '').replace('_', ' ').title()
+                            
+                            # Add source file hint
+                            violation['source_file'] = self._extract_source_file_from_plan_name(plan_file.name)
+                            
                             violations.append(violation)
                             severity = violation.get('severity', 'unknown')
                             if severity in violations_by_severity:
@@ -363,20 +458,49 @@ class OPAValidator:
                             emoji = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟢'}.get(severity, '⚪')
                             markdown_content += f"#### {emoji} {severity.title()} Violations\n\n"
                             
-                            for violation in violations_by_severity[severity]:
+                            for i, violation in enumerate(violations_by_severity[severity], 1):
                                 message = violation.get('message', 'No message provided')
                                 resource = violation.get('resource', 'Unknown resource')
+                                resource_name = violation.get('resource_name', 'unknown')
+                                resource_type = violation.get('resource_type_readable', 'Resource')
                                 plan = violation.get('source_plan', 'Unknown plan')
+                                source_file = violation.get('source_file', 'Unknown file')
+                                policy = violation.get('policy', 'unknown')
                                 
-                                markdown_content += f"- **{message}**\n"
-                                markdown_content += f"  - 📄 Plan: `{plan}`\n"
-                                markdown_content += f"  - 🎯 Resource: `{resource}`\n"
+                                # More specific violation message
+                                markdown_content += f"**{i}. {message}**\n\n"
+                                markdown_content += f"```\n"
+                                markdown_content += f"📂 Source File:    {source_file}\n"
+                                markdown_content += f"🎯 Resource:       {resource}\n"
+                                markdown_content += f"📦 Resource Name:  {resource_name}\n"
+                                markdown_content += f"📋 Resource Type:  {resource_type}\n"
+                                markdown_content += f"📄 Plan File:      {plan}\n"
+                                markdown_content += f"🔍 Policy:         {policy}\n"
+                                markdown_content += f"```\n\n"
                                 
-                                # Add additional details if available
+                                # Add remediation if available
+                                if 'remediation' in violation:
+                                    markdown_content += f"**🔧 How to Fix:**\n"
+                                    markdown_content += f"{violation['remediation']}\n\n"
+                                
+                                # Add security risk if available (for critical violations)
+                                if 'security_risk' in violation:
+                                    markdown_content += f"**⚠️ Security Risk:**\n"
+                                    markdown_content += f"{violation['security_risk']}\n\n"
+                                
+                                # Add any additional details
                                 if 'details' in violation:
-                                    markdown_content += f"  - 💡 Details: {violation['details']}\n"
+                                    markdown_content += f"**💡 Additional Details:**\n"
+                                    markdown_content += f"{violation['details']}\n\n"
                                 
-                                markdown_content += "\n"
+                                # Add affected resource details if available
+                                if 'bucket_affected' in violation:
+                                    markdown_content += f"**📦 Affected Bucket:** `{violation['bucket_affected']}`\n\n"
+                                
+                                if 'missing_tags' in violation:
+                                    markdown_content += f"**🏷️ Missing Tags:** {', '.join(violation['missing_tags'])}\n\n"
+                                
+                                markdown_content += "---\n\n"
                 
                 # Add remediation guidance
                 markdown_content += "### 🔧 How to Fix\n\n"
@@ -457,8 +581,8 @@ class OPAValidator:
             services = self.detect_services(plan_file)
             services_results.append(services)
             
-            # Validate with OPA
-            validation_result = self.validate_plan(plan_file)
+            # Validate with OPA, passing plan_info for resource mapping
+            validation_result = self.validate_plan(plan_file, plan_info)
             validation_results.append(validation_result)
         
         # Generate report
