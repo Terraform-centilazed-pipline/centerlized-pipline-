@@ -147,18 +147,10 @@ jobs:
             terraform-plugins-${{ env.TERRAFORM_VERSION }}-
             terraform-plugins-
 
-      - name: 📦 Cache Terraform Modules (tf-module repo)
-        uses: actions/cache@v4
-        with:
-          path: |
-            **/.terraform/modules
-            **/.terraform/providers
-          key: terraform-modules-${{ hashFiles('controller/main.tf', 'controller/providers.tf', 'controller/versions.tf') }}-v1
-          restore-keys: |
-            terraform-modules-${{ hashFiles('controller/main.tf', 'controller/providers.tf') }}-
-            terraform-modules-
-
-  
+      # Module caching disabled - causes confusion during development
+      # Terraform fetches modules directly from GitHub on each run
+      # This ensures latest module changes are always picked up
+      # Re-enable only for production with proper cache invalidation
 
       - name: 📦 Cache OPA Binary
         id: cache-opa
