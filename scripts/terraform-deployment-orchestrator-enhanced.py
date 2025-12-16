@@ -49,12 +49,67 @@ def strip_ansi_colors(text):
     text = ansi_escape.sub('', text)
     text = bracket_codes.sub('', text)
 
-def backup_terraform_state(backend_bucket: str, backend_key: str, backup_reason: str = "migration") -> Tuple[bool, str]:
+def run_aws_command_with_assume_role(cmd: List[str], account_id: str, role_name: str = None) -> subprocess.CompletedProcess:
+    """Run AWS CLI command with assumed role credentials.
+    
+    The state bucket is in the workload account, but the script runs with GitHub role credentials.
+    We need to assume the TerraformExecutionRole (same role Terraform uses) to access the bucket.
+    
+    Args:
+        cmd: AWS CLI command as list (e.g., ["aws", "s3", "ls", "..."])
+        account_id: AWS account ID where role exists (e.g., "802860742843")
+        role_name: IAM role name to assume (default: from TERRAFORM_ASSUME_ROLE env var or "TerraformExecutionRole")
+    
+    Returns:
+        CompletedProcess result from subprocess.run
+    """
+    # Get role name from environment variable or use default
+    # This matches the var.assume_role_name in variables.tf
+    if role_name is None:
+        role_name = os.environ.get('TERRAFORM_ASSUME_ROLE', 'TerraformExecutionRole')
+    
+    role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
+    
+    # Prepend AWS_PROFILE environment variable or use STS assume-role inline
+    # For simplicity, we'll add --profile parameter if AWS CLI supports it
+    # Better approach: Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN from STS
+    
+    # Get temporary credentials using STS
+    try:
+        sts_cmd = [
+            "aws", "sts", "assume-role",
+            "--role-arn", role_arn,
+            "--role-session-name", "terraform-orchestrator-session",
+            "--duration-seconds", "3600"
+        ]
+        
+        debug_print(f"Assuming role: {role_arn}")
+        sts_result = subprocess.run(sts_cmd, capture_output=True, text=True, check=True)
+        credentials = json.loads(sts_result.stdout)['Credentials']
+        
+        # Create environment with assumed role credentials
+        env = os.environ.copy()
+        env['AWS_ACCESS_KEY_ID'] = credentials['AccessKeyId']
+        env['AWS_SECRET_ACCESS_KEY'] = credentials['SecretAccessKey']
+        env['AWS_SESSION_TOKEN'] = credentials['SessionToken']
+        
+        # Run the actual command with assumed credentials
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+        
+    except subprocess.CalledProcessError as e:
+        debug_print(f"Failed to assume role {role_arn}: {e.stderr}")
+        raise
+    except Exception as e:
+        debug_print(f"Error assuming role: {str(e)}")
+        raise
+
+def backup_terraform_state(backend_bucket: str, backend_key: str, account_id: str, backup_reason: str = "migration") -> Tuple[bool, str]:
     """Backup current Terraform state to S3 before migration.
     
     Args:
         backend_bucket: S3 bucket containing state
         backend_key: Current state file key (e.g., s3/account/region/project-s3/terraform.tfstate)
+        account_id: AWS account ID where state bucket exists (for role assumption)
         backup_reason: Reason for backup (migration, rollback, etc.)
     
     Returns:
@@ -76,7 +131,7 @@ def backup_terraform_state(backend_bucket: str, backend_key: str, backup_reason:
         ]
         
         debug_print(f"Backing up state: {backend_key} -> {backup_key}")
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = run_aws_command_with_assume_role(cmd, account_id)
         
         print(f"✅ State backed up successfully: {backup_key}")
         return True, backup_key
@@ -940,6 +995,7 @@ class EnhancedTerraformOrchestrator:
         """
         backend_bucket = os.environ.get('TERRAFORM_STATE_BUCKET', 'terraform-elb-mdoule-poc')
         account = deployment.get('account_name')
+        account_id = deployment.get('account_id')  # Get account ID for role assumption
         region = deployment.get('region', 'us-east-1')
         project = deployment.get('project')
         
@@ -953,7 +1009,7 @@ class EnhancedTerraformOrchestrator:
                 # Could be: service/.../project/terraform.tfstate OR service/.../project/*/terraform.tfstate
                 list_cmd = ["aws", "s3", "ls", f"s3://{backend_bucket}/{service}/{account}/{region}/{project}/", "--recursive"]
                 try:
-                    list_result = subprocess.run(list_cmd, capture_output=True, text=True)
+                    list_result = run_aws_command_with_assume_role(list_cmd, account_id)
                     if list_result.returncode == 0:
                         # Find terraform.tfstate files
                         for line in list_result.stdout.splitlines():
@@ -971,14 +1027,14 @@ class EnhancedTerraformOrchestrator:
         for old_key in old_keys:
             try:
                 check_cmd = ["aws", "s3", "ls", f"s3://{backend_bucket}/{old_key}"]
-                result = subprocess.run(check_cmd, capture_output=True, text=True)
+                result = run_aws_command_with_assume_role(check_cmd, account_id)
                 
                 if result.returncode == 0:
                     print(f"🔍 Found existing state at old location: {old_key}")
                     print(f"🔄 Migrating to new backend key: {new_backend_key}")
                     
                     # Backup old state
-                    success, backup_key = backup_terraform_state(backend_bucket, old_key, "auto-migration")
+                    success, backup_key = backup_terraform_state(backend_bucket, old_key, account_id, "auto-migration")
                     if not success:
                         print(f"⚠️  Failed to backup state - skipping migration")
                         return
@@ -990,7 +1046,7 @@ class EnhancedTerraformOrchestrator:
                         f"s3://{backend_bucket}/{new_backend_key}"
                     ]
                     
-                    copy_result = subprocess.run(copy_cmd, capture_output=True, text=True)
+                    copy_result = run_aws_command_with_assume_role(copy_cmd, account_id)
                     if copy_result.returncode == 0:
                         print(f"✅ State migrated successfully!")
                         print(f"   Old: {old_key}")
@@ -1000,7 +1056,7 @@ class EnhancedTerraformOrchestrator:
                         # Delete old state to prevent re-detection
                         print(f"🗑️  Cleaning up old state location...")
                         delete_cmd = ["aws", "s3", "rm", f"s3://{backend_bucket}/{old_key}"]
-                        delete_result = subprocess.run(delete_cmd, capture_output=True, text=True)
+                        delete_result = run_aws_command_with_assume_role(delete_cmd, account_id)
                         
                         if delete_result.returncode == 0:
                             print(f"✅ Old state deleted: {old_key}")
