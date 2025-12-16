@@ -996,6 +996,19 @@ class EnhancedTerraformOrchestrator:
                         print(f"   Old: {old_key}")
                         print(f"   New: {new_backend_key}")
                         print(f"   Backup: {backup_key}")
+                        
+                        # Delete old state to prevent re-detection
+                        print(f"🗑️  Cleaning up old state location...")
+                        delete_cmd = ["aws", "s3", "rm", f"s3://{backend_bucket}/{old_key}"]
+                        delete_result = subprocess.run(delete_cmd, capture_output=True, text=True)
+                        
+                        if delete_result.returncode == 0:
+                            print(f"✅ Old state deleted: {old_key}")
+                            print(f"   Migration complete - old state will not be detected again")
+                        else:
+                            print(f"⚠️  Could not delete old state: {delete_result.stderr}")
+                            print(f"   Migration successful but old state remains")
+                        
                         return
                     else:
                         print(f"❌ Failed to copy state: {copy_result.stderr}")
