@@ -537,6 +537,9 @@ class EnhancedTerraformOrchestrator:
         self.tfvars_cache = {}  # Cache tfvars file content by path
         self.plan_json_cache = {}  # Cache parsed terraform plan JSON
         
+        # CRITICAL: Initialize service mapping before loading accounts config
+        self._init_service_mapping()
+        
         terraform_dir_env = os.getenv('TERRAFORM_DIR')
         if terraform_dir_env:
             self.project_root = (self.working_dir / terraform_dir_env).resolve()
@@ -570,10 +573,8 @@ class EnhancedTerraformOrchestrator:
         """Thread-safe validation errors setter"""
         self._thread_local.errors = value
     
-    def _load_accounts_config(self) -> Dict:
-        # NOTE: Resource protection/deletion policies are handled by OPA (Open Policy Agent)
-        # OPA validates and enforces resource protection rules before deployment
-        
+    def _init_service_mapping(self):
+        """Initialize service mapping - called during __init__"""
         # DYNAMIC SERVICE MAPPING - Maps tfvars keys to AWS service names
         # Automatically detects services from tfvars file content
         self.service_mapping = {
