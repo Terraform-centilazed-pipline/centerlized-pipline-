@@ -890,14 +890,25 @@ class EnhancedTerraformOrchestrator:
         try:
             content = self._read_tfvars_cached(tfvars_file)
             
-            detected_services = []
+            detected_services = set()  # Use set to avoid duplicates
+            debug_print(f"🔍 Scanning tfvars for services: {tfvars_file.name}")
+            debug_print(f"📄 File content preview (first 500 chars):\n{content[:500]}")
+            
             for tfvars_key, service in self.service_mapping.items():
                 # Look for service definitions in tfvars
-                if re.search(rf'\b{tfvars_key}\s*=', content):
-                    detected_services.append(service)
-                    debug_print(f"Detected service: {service} (from {tfvars_key})")
+                pattern = rf'\b{tfvars_key}\s*='
+                if re.search(pattern, content):
+                    detected_services.add(service)
+                    debug_print(f"✅ Detected service: {service} (from {tfvars_key} pattern: {pattern})")
             
-            return detected_services
+            services_list = list(detected_services)
+            debug_print(f"📊 Total unique services detected: {len(services_list)} → {services_list}")
+            
+            if not services_list:
+                debug_print(f"⚠️  WARNING: No services detected in {tfvars_file.name}")
+                debug_print(f"📋 Available service mappings: {list(self.service_mapping.keys())}")
+            
+            return services_list
             
         except Exception as e:
             debug_print(f"Error detecting services from {tfvars_file}: {e}")
@@ -2028,7 +2039,40 @@ Please fix the errors and push to a new branch.
                 print(f"\n⚠️  VALIDATION WARNINGS:\n{warn_msg}\n")
             
             # Detect services from tfvars
+            # CRITICAL FIX: Ensure we're reading the correct file by clearing cache first
+            debug_print(f"🔍 About to detect services from: {tfvars_file}")
+            debug_print(f"   Absolute path: {tfvars_file.resolve()}")
+            debug_print(f"   File exists: {tfvars_file.exists()}")
+            debug_print(f"   Working dir: {self.working_dir}")
+            
             services = self._detect_services_from_tfvars(tfvars_file)
+            
+            # CRITICAL: Validate services were detected - if not, try direct read
+            if not services:
+                debug_print(f"⚠️  CRITICAL: No services detected from cached read!")
+                debug_print(f"   Attempting DIRECT file read (bypassing cache)...")
+                try:
+                    direct_content = tfvars_file.read_text()
+                    debug_print(f"   ✅ Direct read successful, length: {len(direct_content)}")
+                    debug_print(f"   Contains 's3_buckets =': {'s3_buckets =' in direct_content or 's3_buckets=' in direct_content}")
+                    debug_print(f"   Contains 'iam_roles =': {'iam_roles =' in direct_content or 'iam_roles=' in direct_content}")
+                    debug_print(f"   Contains 'iam_policies =': {'iam_policies =' in direct_content or 'iam_policies=' in direct_content}")
+                    
+                    # FORCE detection with direct content (bypass cache)
+                    detected_services_direct = set()
+                    for tfvars_key, service in self.service_mapping.items():
+                        pattern = rf'\b{tfvars_key}\s*='
+                        if re.search(pattern, direct_content):
+                            detected_services_direct.add(service)
+                            debug_print(f"   ✅ DIRECT DETECTION: {service} (from {tfvars_key})")
+                    
+                    if detected_services_direct:
+                        services = list(detected_services_direct)
+                        debug_print(f"   ✅ RECOVERY: Services detected from direct read: {services}")
+                    else:
+                        debug_print(f"   ❌ FAILED: No services found even with direct read!")
+                except Exception as e:
+                    debug_print(f"   ❌ Direct read failed: {e}")
             
             # Generate dynamic backend key with resource name
             backend_key = self._generate_dynamic_backend_key(deployment, services, tfvars_file)
