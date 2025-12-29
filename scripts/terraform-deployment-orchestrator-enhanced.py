@@ -1017,25 +1017,27 @@ class EnhancedTerraformOrchestrator:
         
         # Determine service and resource name/path based on count
         if len(services) == 0:
+            # No services detected - likely detection failure, use project name as fallback
             service_part = "general"
-            resource_path = "default"
+            resource_path = project
+            debug_print(f"⚠️  WARNING: No services detected! Using general/{project}")
         elif len(services) == 1:
             # SECURITY: Sanitize service name
             service_part = sanitize_s3_key(services[0])
             # Handle single vs multiple resources
             if len(resource_names) == 0:
-                resource_path = "default"
+                # No resource names extracted - use project name
+                resource_path = project
             elif len(resource_names) == 1:
                 # Single resource - create subfolder with resource name
                 # Example: s3/.../project/bucket-name/terraform.tfstate
                 resource_path = resource_names[0]
             else:
-                # Multiple resources - NO subfolder, state directly under project!
-                # Example: s3/.../project/terraform.tfstate (not s3/.../project/s3-5/...)
-                # The project folder already groups them, no need for extra level
-                resource_path = ""
+                # Multiple resources - use project name to group them
+                # Example: s3/.../project/terraform.tfstate
+                resource_path = project
         else:
-            # Multiple services - use subfolder showing which services
+            # Multiple services - use "multi" prefix with sorted service names
             # Examples:
             # - S3 + IAM: multi/.../project/iam-s3/terraform.tfstate
             # - S3 + Lambda + IAM: multi/.../project/iam-lambda-s3/terraform.tfstate
@@ -1043,14 +1045,10 @@ class EnhancedTerraformOrchestrator:
             # SECURITY: Sanitize each service name before joining
             sanitized_services = [sanitize_s3_key(s) for s in sorted(services)]
             resource_path = "-".join(sanitized_services)
+            debug_print(f"✅ Multi-service deployment detected: {resource_path}")
         
-        # Generate backend key based on resource path
-        if resource_path:
-            # Has subfolder (single resource or multi-service)
-            backend_key = f"{service_part}/{account_name}/{region}/{project}/{resource_path}/terraform.tfstate"
-        else:
-            # No subfolder (multiple resources of same service)
-            backend_key = f"{service_part}/{account_name}/{region}/{project}/terraform.tfstate"
+        # Generate backend key - always use resource_path (never empty)
+        backend_key = f"{service_part}/{account_name}/{region}/{project}/{resource_path}/terraform.tfstate"
         
         debug_print(f"Generated backend key: {backend_key}")
         debug_print(f"  Services: {services} -> service_part: {service_part}")
