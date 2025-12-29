@@ -198,11 +198,23 @@ variable "iam_roles" {
 variable "iam_policies" {
   description = "Map of IAM policies to create"
   type = map(object({
-    name        = string
-    path        = optional(string, "/")
-    description = optional(string)
-    policy      = string
-    tags        = optional(map(string), {})
+    name            = string
+    path            = optional(string, "/")
+    description     = optional(string)
+    policy_document = optional(string, null)  # Inline JSON policy
+    policy_file     = optional(string, null)  # Path to JSON policy file
+    tags            = optional(map(string), {})
+  }))
+  default = {}
+}
+
+variable "role_policy_attachments" {
+  description = "Map of role policy attachments"
+  type = map(object({
+    role_key    = string
+    policy_key  = optional(string, null)
+    policy_arn  = optional(string, null)
+    policy_type = string  # "customer_managed" or "aws_managed"
   }))
   default = {}
 }

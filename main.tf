@@ -129,6 +129,11 @@ locals {
     try(local.yaml_config.iam_policies, {}),
     try(var.iam_policies, {})
   )
+
+  merged_role_policy_attachments = merge(
+    try(local.yaml_config.role_policy_attachments, {}),
+    try(var.role_policy_attachments, {})
+  )
 }
 
 # =============================================================================
@@ -233,6 +238,9 @@ module "iam" {
   
   # IAM Policies
   policies = local.merged_iam_policies
+  
+  # Role Policy Attachments
+  role_policy_attachments = local.merged_role_policy_attachments
   
   # Common tags
   tags = var.common_tags
