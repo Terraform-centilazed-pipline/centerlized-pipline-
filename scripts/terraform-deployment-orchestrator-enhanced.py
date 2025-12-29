@@ -918,15 +918,19 @@ class EnhancedTerraformOrchestrator:
         """Read tfvars file with caching to eliminate redundant disk I/O.
         
         Performance improvement: Eliminates 5+ redundant reads per deployment.
+        
+        CRITICAL: Always use absolute path for cache key to avoid path resolution issues.
         """
+        # CRITICAL FIX: Use absolute path for cache key to ensure consistency
         file_key = str(tfvars_file.resolve())
         
         if file_key not in self.tfvars_cache:
+            # Read actual file content
             with open(tfvars_file, 'r') as f:
                 self.tfvars_cache[file_key] = f.read()
-            debug_print(f"📖 Cached tfvars content: {tfvars_file.name}")
+            debug_print(f"📖 Cached tfvars content: {tfvars_file.name} ({len(self.tfvars_cache[file_key])} bytes)")
         else:
-            debug_print(f"⚡ Using cached tfvars: {tfvars_file.name}")
+            debug_print(f"⚡ Using cached tfvars: {tfvars_file.name} ({len(self.tfvars_cache[file_key])} bytes)")
         
         return self.tfvars_cache[file_key]
     
