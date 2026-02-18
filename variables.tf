@@ -10,10 +10,10 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# ACCOUNT — injected by orchestrator; leave default {} in tfvars
+# ACCOUNT — REQUIRED in every tfvars file
 # ---------------------------------------------------------------------------
 variable "accounts" {
-  description = "AWS account map. Injected by orchestrator at runtime. Set only for manual/standalone runs. Key=account alias, fields: id (12-digit account ID), account_name, environment (dev|staging|prod), regions."
+  description = "REQUIRED. AWS account map — MUST be set in every tfvars file. Key = 12-digit account ID (e.g. '802860742843'). Fields: id (same 12-digit account ID), account_name (alias), environment ('development'|'staging'|'production'), regions (list of AWS regions). The workflow reads 'environment' from this block for branch mapping."
   type = map(object({
     id           = string
     account_name = string
