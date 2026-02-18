@@ -225,8 +225,8 @@ module "kms" {
 # =============================================================================
 
 module "iam" {
-  # Only create if there are IAM resources to deploy
-  count = (length(local.merged_iam_users) + length(local.merged_iam_roles) + length(local.merged_iam_policies)) > 0 ? 1 : 0
+  # Always create IAM module to allow proper resource cleanup (count removed to enable destroy)
+  count = 1
   
   source = "git::https://github.com/Terraform-centilazed-pipline/tf-module.git//Module/IAM"
 

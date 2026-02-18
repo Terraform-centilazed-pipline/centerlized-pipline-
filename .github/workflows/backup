@@ -18,8 +18,6 @@ permissions:
   id-token: write
   contents: read
   actions: read
-  pull-requests: write
-  issues: write
 
 env:
   TERRAFORM_VERSION: '1.11.0'
@@ -71,11 +69,10 @@ jobs:
 
       - name: Generate GitHub App Token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: tibdex/github-app-token@v2
         with:
-          app-id: ${{ secrets.GT_APP_ID }}
-          private-key: ${{ secrets.GT_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
+          app_id: ${{ secrets.GT_APP_ID }}
+          private_key: ${{ secrets.GT_APP_PRIVATE_KEY }}
 
       - name: Checkout Centralized Controller Repo
         uses: actions/checkout@v4
