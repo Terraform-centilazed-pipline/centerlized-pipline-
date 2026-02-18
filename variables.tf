@@ -37,9 +37,9 @@ variable "s3_buckets" {
   description = "S3 bucket configurations"
   type = map(object({
     bucket_name   = string
-    account_key   = string
-    region_code   = string
-    force_destroy = optional(bool, false)
+    account_key   = string      #This should need 12 digits account_id 
+    region_code   = string    
+    force_destroy = optional(bool, false)   # No need on Tfvars 
 
     # Versioning
     versioning_enabled = optional(bool, null)
@@ -52,7 +52,7 @@ variable "s3_buckets" {
     }), null)
 
     # Bucket Policy
-    bucket_policy      = optional(string, null)
+    bucket_policy      = optional(string, null)  
     bucket_policy_file = optional(string, null)
 
     tags = optional(map(string), {})
@@ -73,6 +73,8 @@ variable "s3_buckets" {
     error_message = "Each encrypted S3 bucket must include a non-empty kms_master_key_id."
   }
 }
+
+# assume_role_name This is for only use backend, not in tfvars 
 
 variable "assume_role_name" {
   description = "IAM role name to assume for cross-account access"
