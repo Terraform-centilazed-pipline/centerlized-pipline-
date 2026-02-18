@@ -40,11 +40,11 @@ variable "aws_regions" {
 # S3 BUCKETS — Required: bucket_name, account_key, region_code
 # ---------------------------------------------------------------------------
 variable "s3_buckets" {
-  description = "Map of S3 buckets to create. Key=logical name (e.g. 'app-data'). REQUIRED: bucket_name (globally unique, lowercase, no underscores), account_key (12-digit AWS account ID — NOT alias), region_code (full region e.g. 'us-east-1'). For KMS encryption: set encryption.sse_algorithm='aws:kms' and encryption.kms_master_key_id (full KMS ARN). bucket_policy and bucket_policy_file are mutually exclusive."
+  description = "Map of S3 buckets to create. Key=logical name (e.g. 'app-data'). REQUIRED: bucket_name (globally unique, lowercase, no underscores), account_key (12-digit AWS account ID — NOT alias), region_code (SHORT CODE from aws_regions: 'use1' for us-east-1, 'usw2' for us-west-2, 'ew1' for eu-west-1). For KMS encryption: set encryption.sse_algorithm='aws:kms' and encryption.kms_master_key_id (full KMS ARN). bucket_policy and bucket_policy_file are mutually exclusive."
   type = map(object({
     bucket_name   = string
     account_key   = string      # 12-digit AWS account ID (e.g. "123456789123"), NOT the account name 
-    region_code   = string      # Full AWS region name (e.g. "us-east-1"), NOT a short code
+    region_code   = string      # SHORT CODE only: "use1" (us-east-1), "usw2" (us-west-2), "ew1" (eu-west-1). Must match a key in aws_regions variable.
     force_destroy = optional(bool, false)   # CONTROLLER-MANAGED: Do not set in tfvars
 
     # Versioning — set to true to protect against accidental deletion/overwrites
@@ -105,7 +105,7 @@ variable "yaml_config_file" {
 # COMMON TAGS — applied to ALL resources; merge with per-resource tags
 # ---------------------------------------------------------------------------
 variable "common_tags" {
-  description = "Tags applied to every resource in this deployment. REQUIRED keys: ManagedBy (always 'terraform'), Project, Environment ('dev'|'staging'|'prod'), Owner (team or person). Optional: CostCenter, Application. Per-resource tags override these on key conflict."
+  description = "Tags applied to every resource. Has defaults — DO NOT set in tfvars unless customizing. OPA-MANDATORY (pipeline will FAIL without these): ManagedBy='terraform', Project, Environment ('dev'|'staging'|'prod'), Owner. Optional: CostCenter, Application. Per-resource tags override on key conflict."
   type        = map(string)
   default = {
     ManagedBy   = "terraform"
