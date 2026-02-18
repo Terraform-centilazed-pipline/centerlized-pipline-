@@ -37,7 +37,7 @@ variable "s3_buckets" {
   description = "S3 bucket configurations"
   type = map(object({
     bucket_name   = string
-    account_key   = string      #This should need 12 digits account_id 
+    account_key   = string      #  # 12-digit AWS account ID (e.g. 123456789123), NOT the account name
     region_code   = string    
     force_destroy = optional(bool, false)   # No need on Tfvars 
 
