@@ -40,11 +40,11 @@ variable "aws_regions" {
 # S3 BUCKETS — Required: bucket_name, account_key, region_code
 # ---------------------------------------------------------------------------
 variable "s3_buckets" {
-  description = "Map of S3 buckets to create. Key=logical name (e.g. 'app-data'). REQUIRED: bucket_name (globally unique, lowercase, no underscores), account_key (12-digit AWS account ID — NOT alias), region_code (SHORT CODE from aws_regions: 'use1' for us-east-1, 'usw2' for us-west-2, 'ew1' for eu-west-1). For KMS encryption: set encryption.sse_algorithm='aws:kms' and encryption.kms_master_key_id (full KMS ARN). bucket_policy and bucket_policy_file are mutually exclusive."
+  description = "Map of S3 buckets to create. Key=logical name (e.g. 'app-data'). REQUIRED: bucket_name (globally unique, lowercase, no underscores), account_key (12-digit AWS account ID — NOT alias), region_code (⚠️ SHORT CODE ONLY — NEVER the full region name: use 'use1' NOT 'us-east-1', use 'usw2' NOT 'us-west-2', use 'ew1' NOT 'eu-west-1'. Any other format will break the pipeline). For KMS encryption: set encryption.sse_algorithm='aws:kms' and encryption.kms_master_key_id (full KMS ARN). bucket_policy and bucket_policy_file are mutually exclusive."
   type = map(object({
     bucket_name   = string
     account_key   = string      # 12-digit AWS account ID (e.g. "123456789123"), NOT the account name 
-    region_code   = string      # SHORT CODE only: "use1" (us-east-1), "usw2" (us-west-2), "ew1" (eu-west-1). Must match a key in aws_regions variable.
+    region_code   = string      # ⚠️ SHORT CODE ONLY — NEVER use full region name. Allowed values: "use1" (us-east-1) | "usw2" (us-west-2) | "ew1" (eu-west-1). Using "us-east-1" or any full name will BREAK the deployment. Must exactly match a key in aws_regions variable.
     force_destroy = optional(bool, false)   # CONTROLLER-MANAGED: Do not set in tfvars
 
     # Versioning — set to true to protect against accidental deletion/overwrites
