@@ -43,7 +43,7 @@ variable "s3_buckets" {
   description = "Map of S3 buckets to create. Key=logical name (e.g. 'app-data'). REQUIRED: bucket_name (globally unique, lowercase, no underscores), account_key (12-digit AWS account ID — NOT alias), region_code (full region e.g. 'us-east-1'). For KMS encryption: set encryption.sse_algorithm='aws:kms' and encryption.kms_master_key_id (full KMS ARN). bucket_policy and bucket_policy_file are mutually exclusive."
   type = map(object({
     bucket_name   = string
-    account_key   = string      # 12-digit AWS account ID (e.g. "123456789012"), NOT the account name or alias
+    account_key   = string      # 12-digit AWS account ID (e.g. "123456789123"), NOT the account name 
     region_code   = string      # Full AWS region name (e.g. "us-east-1"), NOT a short code
     force_destroy = optional(bool, false)   # CONTROLLER-MANAGED: Do not set in tfvars
 
